@@ -11,3 +11,4 @@ httpx
 openai
 anthropic
 pypdf
+pymupdf
