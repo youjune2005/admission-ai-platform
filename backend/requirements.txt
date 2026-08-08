@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+sqlalchemy
+python-multipart
+python-dotenv
+pandas
+openpyxl
+httpx
+openai
+anthropic
+pypdf
