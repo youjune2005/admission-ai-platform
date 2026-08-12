@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { UploadCloud, FileText, RefreshCw, FolderSync } from "lucide-react";
 import { apiClient } from "../api/client";
 import Markdown from "../components/Markdown";
-import type { IngestResult, UploadedDocument } from "../types";
+import type { DocumentListResponse, IngestResult, UploadedDocument } from "../types";
 
 export default function Documents() {
   const [docs, setDocs] = useState<UploadedDocument[]>([]);
@@ -13,8 +13,10 @@ export default function Documents() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadDocs = async () => {
-    const res = await apiClient.get<UploadedDocument[]>("/api/documents");
-    setDocs(res.data);
+    const res = await apiClient.get<DocumentListResponse>("/api/documents", {
+      params: { page_size: 100 },
+    });
+    setDocs(res.data.items);
   };
 
   useEffect(() => {

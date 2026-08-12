@@ -1,60 +1,99 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard,
-  MessageSquare,
-  BarChart3,
-  ListChecks,
-  FileText,
-  GraduationCap,
+  Home,
+  MessageSquareText,
+  FilePenLine,
+  FolderOpen,
+  BookOpen,
+  Settings,
+  ChevronDown,
+  UserRound,
 } from "lucide-react";
+import NotificationBell from "./NotificationBell";
+import PageTransition from "./PageTransition";
 
 const navItems = [
-  { to: "/", label: "대시보드", icon: LayoutDashboard, end: true },
-  { to: "/chat", label: "AI 상담", icon: MessageSquare },
-  { to: "/analytics", label: "데이터 분석", icon: BarChart3 },
-  { to: "/workflow", label: "업무 자동화", icon: ListChecks },
-  { to: "/documents", label: "서류 검토", icon: FileText },
+  { to: "/", label: "홈", icon: Home, end: true },
+  { to: "/inquiry", label: "입시 문의 답변", icon: MessageSquareText },
+  { to: "/documents/create", label: "행정문서 작성", icon: FilePenLine },
+  { to: "/archive", label: "문서 보관함", icon: FolderOpen },
+  { to: "/regulations", label: "규정·자료 관리", icon: BookOpen },
 ];
 
 export default function Layout() {
+  const navigate = useNavigate();
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-slate-50">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-200 bg-white">
-        <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-5">
-          <GraduationCap className="h-7 w-7 text-indigo-600" />
-          <div>
-            <p className="text-sm font-semibold leading-tight text-slate-900">
-              입시행정 통합
-            </p>
-            <p className="text-xs leading-tight text-slate-500">지원 시스템</p>
-          </div>
+    <div className="flex h-screen w-screen overflow-hidden bg-[var(--ssu-bg)]">
+      <aside className="flex w-[232px] shrink-0 flex-col bg-[var(--ssu-navy)] text-white">
+        <div className="px-5 py-5 text-[17px] font-bold tracking-tight">
+          SSU 입시행정 AI
         </div>
-        <nav className="flex-1 space-y-1 px-3 py-4">
+
+        <nav className="flex-1 space-y-1 px-3">
           {navItems.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
               end={end}
               className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
+                `ui-nav-item flex items-center gap-3 rounded-lg px-3 py-2.5 text-[14px] font-medium ${
                   isActive
-                    ? "bg-indigo-50 text-indigo-700"
-                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                    ? "bg-[var(--ssu-blue)] text-white shadow-sm"
+                    : "text-white/75 hover:bg-white/10 hover:text-white"
                 }`
               }
             >
-              <Icon className="h-4.5 w-4.5" />
+              <Icon className="h-4 w-4" strokeWidth={1.8} />
               {label}
             </NavLink>
           ))}
         </nav>
-        <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-400">
-          admission-ai-platform v0.1
-        </div>
+
+        <button
+          type="button"
+          onClick={() => navigate("/settings")}
+          className="ui-nav-item m-3 flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[14px] font-medium text-white/70 hover:bg-white/10 hover:text-white"
+        >
+          <Settings className="h-4 w-4" strokeWidth={1.8} />
+          설정
+        </button>
       </aside>
-      <main className="flex-1 overflow-y-auto">
-        <Outlet />
-      </main>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--ssu-border)] bg-white px-6">
+          <button
+            type="button"
+            className="ui-pressable inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[13px] font-medium text-slate-700 hover:bg-slate-50"
+          >
+            2027학년도 · 수시모집 기준
+            <ChevronDown className="h-4 w-4 text-slate-400" />
+          </button>
+
+          <div className="flex items-center gap-3">
+            <NotificationBell />
+
+            <button
+              type="button"
+              className="ui-pressable inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-slate-50"
+            >
+              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--ssu-navy)] text-xs font-semibold text-white">
+                입
+              </span>
+              <span className="text-left text-[13px] leading-tight">
+                <span className="block font-semibold text-slate-800">입학팀 담당자</span>
+                <span className="block text-[11px] text-slate-500">입학팀</span>
+              </span>
+              <ChevronDown className="h-4 w-4 text-slate-400" />
+              <UserRound className="sr-only" />
+            </button>
+          </div>
+        </header>
+
+        <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto [&>div]:h-full">
+          <PageTransition />
+        </main>
+      </div>
     </div>
   );
 }

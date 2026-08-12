@@ -1,3 +1,8 @@
+"""채팅 세션 조회용 최소 API (대시보드 집계 호환).
+
+입시 문의 답변은 /api/inquiry 를 사용합니다.
+"""
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -25,6 +30,7 @@ def get_session(session_id: int, db: Session = Depends(get_db)):
 
 @router.post("/message", response_model=ChatMessageOut)
 def send_message(payload: ChatMessageIn, db: Session = Depends(get_db)):
+    """비스트리밍 단건 응답 (내부/호환용)."""
     session = db.get(ChatSession, payload.session_id) if payload.session_id else None
     if session is None:
         session = ChatSession(title=payload.message[:30] or "새 상담")

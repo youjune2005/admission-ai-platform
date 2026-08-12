@@ -1,10 +1,14 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
-import Chat from "./pages/Chat";
-import Analytics from "./pages/Analytics";
-import Workflow from "./pages/Workflow";
-import Documents from "./pages/Documents";
+import InquiryPage from "./pages/Inquiry";
+import InquiryDraft from "./pages/InquiryDraft";
+import DocumentCreate from "./pages/DocumentCreate";
+import DocumentWizard from "./pages/DocumentWizard";
+import BudgetWizard from "./pages/BudgetWizard";
+import Archive from "./pages/Archive";
+import Regulations from "./pages/Regulations";
+import SettingsPage from "./pages/SettingsPage";
 
 function App() {
   return (
@@ -12,10 +16,20 @@ function App() {
       <Routes>
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
-          <Route path="chat" element={<Chat />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="workflow" element={<Workflow />} />
-          <Route path="documents" element={<Documents />} />
+          <Route path="inquiry" element={<InquiryPage />} />
+          <Route path="inquiry/:id" element={<InquiryDraft />} />
+          <Route path="documents/create" element={<DocumentCreate />} />
+          <Route path="documents/create/wizard" element={<DocumentWizard />} />
+          <Route path="documents/create/budget" element={<BudgetWizard />} />
+          <Route path="archive" element={<Archive />} />
+          <Route path="regulations" element={<Regulations />} />
+          <Route path="settings" element={<SettingsPage />} />
+
+          {/* 이전 경로 호환 */}
+          <Route path="chat" element={<Navigate to="/inquiry" replace />} />
+          <Route path="workflow" element={<Navigate to="/documents/create" replace />} />
+          <Route path="documents" element={<Navigate to="/archive" replace />} />
+          <Route path="analytics" element={<Navigate to="/regulations" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -22,21 +22,27 @@ if str(_BACKEND_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analytics, chat, documents, workflow
+from app.api.routes import analytics, archive, budget, chat, dashboard, documents, forms, inquiry, plans, staff, workflow
 from app.core.config import get_settings
 from app.db.database import init_db
+from app.middleware.rate_limit import RateLimitMiddleware
 
 settings = get_settings()
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
+# CORS: 단기 공유 시 cors_allow_all=True 또는 터널 Origin을 cors_origins에 추가
+_cors_origins = ["*"] if settings.cors_allow_all else settings.cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=not settings.cors_allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if settings.rate_limit_per_minute > 0:
+    app.add_middleware(RateLimitMiddleware, max_requests=settings.rate_limit_per_minute)
 
 
 @app.on_event("startup")
@@ -72,9 +78,16 @@ def health_check():
 
 
 app.include_router(chat.router)
+app.include_router(inquiry.router)
 app.include_router(analytics.router)
 app.include_router(workflow.router)
 app.include_router(documents.router)
+app.include_router(forms.router)
+app.include_router(plans.router)
+app.include_router(budget.router)
+app.include_router(staff.router)
+app.include_router(archive.router)
+app.include_router(dashboard.router)
 
 
 if __name__ == "__main__":

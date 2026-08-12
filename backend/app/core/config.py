@@ -32,7 +32,13 @@ class Settings(BaseSettings):
     data_dir: str = str(_BACKEND_DIR.parent / "data")
     rag_top_k: int = 4
 
+    # 개발 기본값. 공유 시 CORS_ORIGINS 환경변수로 터널 URL 추가
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # True면 모든 Origin 허용 (단기 데모 공유용). 운영에서는 False 유지
+    cors_allow_all: bool = False
+
+    # IP당 분당 요청 수 (0 = 비활성). AI 비용 폭탄·매크로 완화
+    rate_limit_per_minute: int = 60
 
     upload_dir: str = str(_BACKEND_DIR / "uploads")
 

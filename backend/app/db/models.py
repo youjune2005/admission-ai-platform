@@ -57,6 +57,14 @@ class UploadedDocument(Base):
     doc_type: Mapped[str] = mapped_column(String(50))  # "csv" | "excel" | "pdf" | "text"
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(String(20), default="upload")  # "upload" | "data_folder"
+    # 규정·자료 관리 메타
+    category: Mapped[str] = mapped_column(String(50), default="기타")
+    version: Mapped[str] = mapped_column(String(20), default="V1.0")
+    # latest | needs_update | processing
+    status: Mapped[str] = mapped_column(String(30), default="latest")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     chunks: Mapped[list["DocumentChunk"]] = relationship(
@@ -74,3 +82,124 @@ class DocumentChunk(Base):
     embedding: Mapped[str] = mapped_column(Text)  # JSON-encoded list[float]
 
     document: Mapped[UploadedDocument] = relationship(back_populates="chunks")
+
+
+class Inquiry(Base):
+    """입시 문의 답변 (1건 = 문의 + AI 초안)."""
+
+    __tablename__ = "inquiries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    academic_year: Mapped[str] = mapped_column(String(20), default="2027")
+    admission_type: Mapped[str] = mapped_column(String(40), default="수시모집")
+    selection_type: Mapped[str] = mapped_column(String(50), default="")
+    asker_type: Mapped[str] = mapped_column(String(20), default="학생")  # 학생 | 학부모
+    content: Mapped[str] = mapped_column(Text)
+    masked_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI가 처음/다시 생성한 원본 초안 (담당자 수정분과 비교용)
+    ai_draft_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # pending | generating | completed | reviewed
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    selected_document_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    references_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    check_notes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    activities: Mapped[list["InquiryActivity"]] = relationship(
+        back_populates="inquiry",
+        cascade="all, delete-orphan",
+        order_by="desc(InquiryActivity.created_at), desc(InquiryActivity.id)",
+    )
+
+
+class InquiryActivity(Base):
+    __tablename__ = "inquiry_activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inquiry_id: Mapped[int] = mapped_column(ForeignKey("inquiries.id"), index=True)
+    message: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    inquiry: Mapped["Inquiry"] = relationship(back_populates="activities")
+
+
+class KpiDailySnapshot(Base):
+    """홈 KPI 일별 스냅샷 — 어제 대비 증감 계산용 로그."""
+
+    __tablename__ = "kpi_daily_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # KST 기준 YYYY-MM-DD
+    day: Mapped[str] = mapped_column(String(10), unique=True, index=True)
+    today_received: Mapped[int] = mapped_column(default=0)
+    draft_completed: Mapped[int] = mapped_column(default=0)
+    needs_review: Mapped[int] = mapped_column(default=0)
+    regulation_review: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class BriefingPlan(Base):
+    """입시설명회 운영계획서 작성 입력값 및 생성 결과."""
+
+    __tablename__ = "briefing_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255))
+    payload_json: Mapped[str] = mapped_column(Text)  # JSON
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class StaffPerson(Base):
+    """운영계획서 등에서 사용한 담당자 이름 이력."""
+
+    __tablename__ = "staff_people"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class GeneratedDocument(Base):
+    """행정문서 작성으로 생성된 문서 보관함 레코드."""
+
+    __tablename__ = "generated_documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(255))
+    # briefing | budget | visit | fair | interview | report | other
+    source_kind: Mapped[str] = mapped_column(String(40), default="other", index=True)
+    source_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    # 계획서 | 예산안 | 안내문 | FAQ | 보고서 등
+    doc_type: Mapped[str] = mapped_column(String(50), default="계획서")
+    # 수시 | 정시 | 기타
+    admission_category: Mapped[str] = mapped_column(String(40), default="수시")
+    academic_year: Mapped[str] = mapped_column(String(20), default="2027")
+    author: Mapped[str] = mapped_column(String(100), default="입학팀 담당자")
+    last_modifier: Mapped[str] = mapped_column(String(100), default="입학팀 담당자")
+    # draft | review | approved | archived
+    status: Mapped[str] = mapped_column(String(30), default="approved", index=True)
+    version: Mapped[str] = mapped_column(String(20), default="v1.0")
+    pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approver: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archive_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

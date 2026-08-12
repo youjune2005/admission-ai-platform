@@ -50,6 +50,49 @@ npm run dev
 
 기본적으로 `http://localhost:5173` 에서 실행됩니다.
 
+## 공개 URL로 단기 공유 (도메인 없이)
+
+API 키는 **항상 `backend/.env`에만** 둡니다. 프론트엔드에는 키가 없습니다.
+공유할 때는 Vite가 `/api`를 백엔드로 프록시하므로, 브라우저에는 키·백엔드 주소가 노출되지 않습니다.
+
+### 1) 백엔드
+
+```bash
+cd backend
+source .venv/bin/activate
+# 선택: 단기 데모용 CORS 전체 허용
+# echo 'CORS_ALLOW_ALL=true' >> .env
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+### 2) 프론트 (공유 모드)
+
+```bash
+cd frontend
+npm run dev:share
+```
+
+`VITE_API_BASE_URL`을 비워 `/api` → `localhost:8000` 프록시를 사용합니다.
+
+### 3) Cloudflare 무료 터널 URL 발급
+
+```bash
+./scripts/share.sh
+```
+
+터미널에 나오는 `https://xxxx.trycloudflare.com` 주소를 공유하면 됩니다.  
+(최초 1회 `brew install cloudflared` 필요할 수 있습니다.)
+
+### 보안 요약
+
+| 항목 | 이 프로젝트 |
+| --- | --- |
+| API 키 위치 | `backend/.env` only (브라우저 F12에 안 보임) |
+| 공개 URL | Cloudflare Quick Tunnel (HTTPS) |
+| 남용 완화 | IP당 분당 `RATE_LIMIT_PER_MINUTE`(기본 60) |
+
+장기 배포는 Vercel(프론트) + Railway/Render(백엔드) 조합을 권장합니다. 서버리스만으로 FastAPI+SQLite RAG 전체를 넣기는 어렵습니다.
+
 ## 데이터 반영 방법 (RAG)
 
 입시 관련 문서(모집요강 PDF, 안내문, FAQ 등)를 `data/` 폴더 하위에 넣고 서류 검토
