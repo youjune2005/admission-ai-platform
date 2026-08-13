@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -14,42 +13,37 @@ import {
   X,
 } from "lucide-react";
 import { API_BASE_URL, apiClient } from "../api/client";
+import OwnerInput from "../components/OwnerInput";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
 import ContentReviewPanel from "../components/ContentReviewPanel";
 import RegulationReviewPanel from "../components/RegulationReviewPanel";
+import WizardField from "../components/WizardField";
 import {
   BRIEFING_FLOW_STEPS,
   flowStepFromWizard,
 } from "../constants/documentFlow";
-import { asNumber, asRecord, asString } from "../lib/archiveWizard";
+import { useArchiveHydration } from "../hooks/useArchiveHydration";
+import { useStaffDirectory } from "../hooks/useStaffDirectory";
+import {
+  applyArchiveReviewStatus,
+  archiveAndLeave,
+  asRecord,
+  asString,
+  formatBudgetInput,
+  formatWon,
+  parseBudgetLineRows,
+  parseProgramRows,
+  sleep,
+  type BudgetLineRow,
+  type ProgramRow,
+} from "../lib/archiveWizard";
 import { applyReviewPatches } from "../lib/reviewPatches";
 import type {
   ContentReviewPatch,
   ContentReviewResult,
-  GeneratedDocument,
   RegulationReviewResult,
 } from "../types";
-
-type ProgramRow = {
-  id: string;
-  time: string;
-  content: string;
-  owner: string;
-};
-
-type BudgetLineRow = {
-  id: string;
-  name: string;
-  basis: string;
-  unit_price: number;
-  quantity: number;
-};
-
-type StaffPerson = {
-  id: number;
-  name: string;
-};
 
 type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -104,20 +98,6 @@ const DEFAULT_PROGRAMS: ProgramRow[] = [
   { id: "5", time: "16:00~16:30", content: "개별 상담", owner: "" },
 ];
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function formatBudgetInput(raw: string) {
-  const digits = raw.replace(/[^\d]/g, "");
-  if (!digits) return "";
-  return Number(digits).toLocaleString("ko-KR");
-}
-
-function won(n: number) {
-  return `${Number(n || 0).toLocaleString("ko-KR")}원`;
-}
-
 function buildBudgetLinesFromSelection(
   selected: string[],
   attendeesRaw: string,
@@ -161,7 +141,7 @@ export default function DocumentWizard() {
   const [newBudgetItem, setNewBudgetItem] = useState("");
   const [budgetLines, setBudgetLines] = useState<BudgetLineRow[]>([]);
   const [programs, setPrograms] = useState<ProgramRow[]>(DEFAULT_PROGRAMS);
-  const [staffList, setStaffList] = useState<StaffPerson[]>([]);
+  const { staffList, loadStaff, saveStaffName, deleteStaff } = useStaffDirectory();
   const [activeOwnerId, setActiveOwnerId] = useState<string | null>(null);
 
   const [loadingLabel, setLoadingLabel] = useState("");
@@ -171,7 +151,6 @@ export default function DocumentWizard() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
-  const [hydrating, setHydrating] = useState(!!archiveIdParam);
   const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
   const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
   const [regulationReview, setRegulationReview] = useState<RegulationReviewResult | null>(null);
@@ -188,111 +167,41 @@ export default function DocumentWizard() {
   );
   const budgetRemaining = budgetLimitNumber - budgetTotal;
 
-  const loadStaff = async () => {
-    const res = await apiClient.get<StaffPerson[]>("/api/staff");
-    setStaffList(res.data);
-  };
-
-  useEffect(() => {
-    loadStaff().catch(() => setStaffList([]));
-  }, []);
-
-  useEffect(() => {
-    if (!archiveIdParam) return;
-    const id = Number(archiveIdParam);
-    if (!Number.isFinite(id) || id <= 0) {
-      setHydrating(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await apiClient.get<GeneratedDocument>(`/api/archive/${id}`);
-        if (cancelled) return;
-        const p = asRecord(data.payload) ?? {};
-        setArchiveId(data.id);
-        setEventName(asString(p.event_name, "2027학년도 수시 입시설명회"));
-        setTarget(asString(p.target, "서울 지역 고등학생 및 학부모"));
-        setAttendees(asString(p.attendees, "100"));
-        setSchedule(asString(p.schedule));
-        setLocation(asString(p.location));
-        setDepartment(asString(p.department, "입학팀"));
-        const limitRaw = p.budget_limit;
-        setBudgetLimit(
-          formatBudgetInput(
-            typeof limitRaw === "number" ? String(limitRaw) : asString(limitRaw, "2000000")
-          )
-        );
-        const itemNames = Array.isArray(p.budget_items)
-          ? p.budget_items.map((n) => asString(n)).filter(Boolean)
-          : [];
-        const lineRows: BudgetLineRow[] = Array.isArray(p.budget_lines)
-          ? p.budget_lines.flatMap((row, idx) => {
-              const rec = asRecord(row);
-              if (!rec) return [];
-              return [
-                {
-                  id: `resume-${idx}`,
-                  name: asString(rec.name),
-                  basis: asString(rec.basis),
-                  unit_price: asNumber(rec.unit_price),
-                  quantity: asNumber(rec.quantity, 1),
-                },
-              ];
-            })
-          : [];
-        const names = itemNames.length ? itemNames : lineRows.map((r) => r.name).filter(Boolean);
-        if (names.length) {
-          setBudgetOptions((prev) => Array.from(new Set([...prev, ...names])));
-          setBudgetItems(names);
-        }
-        if (lineRows.length) setBudgetLines(lineRows);
-        const programRows: ProgramRow[] = Array.isArray(p.programs)
-          ? p.programs.flatMap((row, idx) => {
-              const rec = asRecord(row);
-              if (!rec) return [];
-              return [
-                {
-                  id: `resume-p-${idx}`,
-                  time: asString(rec.time),
-                  content: asString(rec.content),
-                  owner: asString(rec.owner),
-                },
-              ];
-            })
-          : [];
-        if (programRows.length) setPrograms(programRows);
-        setPdfUrl(null);
-        setPreviewUrl(null);
-        setStep(1);
-      } catch {
-        setError("작성 중이던 문서를 불러오지 못했습니다.");
-      } finally {
-        if (!cancelled) setHydrating(false);
+  const hydrating = useArchiveHydration(
+    archiveIdParam,
+    (data) => {
+      const p = asRecord(data.payload) ?? {};
+      setArchiveId(data.id);
+      setEventName(asString(p.event_name, "2027학년도 수시 입시설명회"));
+      setTarget(asString(p.target, "서울 지역 고등학생 및 학부모"));
+      setAttendees(asString(p.attendees, "100"));
+      setSchedule(asString(p.schedule));
+      setLocation(asString(p.location));
+      setDepartment(asString(p.department, "입학팀"));
+      const limitRaw = p.budget_limit;
+      setBudgetLimit(
+        formatBudgetInput(
+          typeof limitRaw === "number" ? String(limitRaw) : asString(limitRaw, "2000000")
+        )
+      );
+      const itemNames = Array.isArray(p.budget_items)
+        ? p.budget_items.map((n) => asString(n)).filter(Boolean)
+        : [];
+      const lineRows = parseBudgetLineRows(p.budget_lines, (idx) => `resume-${idx}`);
+      const names = itemNames.length ? itemNames : lineRows.map((r) => r.name).filter(Boolean);
+      if (names.length) {
+        setBudgetOptions((prev) => Array.from(new Set([...prev, ...names])));
+        setBudgetItems(names);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [archiveIdParam]);
-
-  const saveStaffName = async (raw: string) => {
-    const name = raw.trim();
-    if (!name) return null;
-    const res = await apiClient.post<StaffPerson>("/api/staff", { name });
-    setStaffList((prev) => {
-      if (prev.some((p) => p.id === res.data.id || p.name === res.data.name)) {
-        return prev.map((p) => (p.id === res.data.id ? res.data : p));
-      }
-      return [...prev, res.data].sort((a, b) => a.name.localeCompare(b.name, "ko"));
-    });
-    return res.data;
-  };
-
-  const deleteStaff = async (id: number) => {
-    await apiClient.delete(`/api/staff/${id}`);
-    setStaffList((prev) => prev.filter((p) => p.id !== id));
-  };
+      if (lineRows.length) setBudgetLines(lineRows);
+      const programRows = parseProgramRows(p.programs, (idx) => `resume-p-${idx}`);
+      if (programRows.length) setPrograms(programRows);
+      setPdfUrl(null);
+      setPreviewUrl(null);
+      setStep(1);
+    },
+    setError,
+  );
 
   const applyStaffToProgram = (name: string) => {
     const targetId =
@@ -380,12 +289,7 @@ export default function DocumentWizard() {
   const saveToArchive = async () => {
     setSavingArchive(true);
     try {
-      if (archiveId != null) {
-        await apiClient.patch(`/api/archive/${archiveId}/status`, { status: "archived" });
-      }
-      navigate("/archive");
-    } catch {
-      navigate("/archive");
+      await archiveAndLeave(archiveId, navigate);
     } finally {
       setSavingArchive(false);
     }
@@ -423,40 +327,25 @@ export default function DocumentWizard() {
         formatBudgetInput(typeof limitRaw === "number" ? String(limitRaw) : asString(limitRaw, budgetLimit))
       );
     }
-    const lineRows: BudgetLineRow[] = Array.isArray(p.budget_lines)
-      ? p.budget_lines.flatMap((row, idx) => {
-          const rec = asRecord(row);
-          if (!rec) return [];
-          return [
-            {
-              id: budgetLines[idx]?.id ?? `patched-${idx}`,
-              name: asString(rec.name),
-              basis: asString(rec.basis),
-              unit_price: asNumber(rec.unit_price),
-              quantity: asNumber(rec.quantity, 1),
-            },
-          ];
-        })
-      : [];
-    if (lineRows.length) {
-      setBudgetLines(lineRows);
-      setBudgetItems(lineRows.map((r) => r.name).filter(Boolean));
-    }
-    const programRows: ProgramRow[] = Array.isArray(p.programs)
-      ? p.programs.flatMap((row, idx) => {
-          const rec = asRecord(row);
-          if (!rec) return [];
-          return [
-            {
-              id: programs[idx]?.id ?? `patched-p-${idx}`,
-              time: asString(rec.time),
-              content: asString(rec.content),
-              owner: asString(rec.owner),
-            },
-          ];
-        })
-      : [];
-    if (programRows.length) setPrograms(programRows);
+    setBudgetLines((prev) => {
+      const lineRows = parseBudgetLineRows(
+        p.budget_lines,
+        (idx) => prev[idx]?.id ?? `patched-${idx}`,
+      );
+      return lineRows.length ? lineRows : prev;
+    });
+    setBudgetItems((prevItems) => {
+      const lineRows = parseBudgetLineRows(p.budget_lines, (idx) => String(idx));
+      const names = lineRows.map((r) => r.name).filter(Boolean);
+      return names.length ? names : prevItems;
+    });
+    setPrograms((prev) => {
+      const programRows = parseProgramRows(
+        p.programs,
+        (idx) => prev[idx]?.id ?? `patched-p-${idx}`,
+      );
+      return programRows.length ? programRows : prev;
+    });
   };
 
   const generatePlan = async (payload: ReturnType<typeof buildPayload>) => {
@@ -466,12 +355,17 @@ export default function DocumentWizard() {
       preview_url: string | null;
       title: string;
       archive_id?: number | null;
-    }>("/api/plans/briefing", payload);
+    }>("/api/plans/briefing", {
+      ...payload,
+      archive_status: "draft",
+    });
+    const nextArchiveId = data.archive_id ?? payload.archive_id ?? null;
     setPlanId(data.id);
-    setArchiveId(data.archive_id ?? null);
+    setArchiveId(nextArchiveId);
     setPdfUrl(data.pdf_url);
     setPreviewUrl(data.preview_url);
     await loadStaff();
+    return nextArchiveId;
   };
 
   const runRegulationReview = async (payload: ReturnType<typeof buildPayload>) => {
@@ -484,6 +378,7 @@ export default function DocumentWizard() {
       payload: reviewPayload,
     });
     setRegulationReview(data);
+    await applyArchiveReviewStatus(payload.archive_id ?? archiveId, data);
     if (!data.ok && data.findings.length > 0) {
       setPausedPhase("regulation");
       setLoadingLabel("");
@@ -530,8 +425,8 @@ export default function DocumentWizard() {
       setLoadingLabel("행사 계획안을 생성하고 있습니다…");
       const apiPromise = generatePlan(payload);
       await sleep(1200);
-      await apiPromise;
-      await runContentReview(payload);
+      const nextArchiveId = await apiPromise;
+      await runContentReview({ ...payload, archive_id: nextArchiveId });
     } catch (e) {
       setStep(2);
       setPausedPhase(null);
@@ -553,7 +448,8 @@ export default function DocumentWizard() {
         setPausedPhase(null);
         setStep(3);
         setLoadingLabel("수정된 내용으로 문서를 다시 구성하고 있습니다…");
-        await generatePlan(payload);
+        const nextArchiveId = await generatePlan(payload);
+        payload = { ...payload, archive_id: nextArchiveId };
       }
       setContentReview(null);
       await runRegulationReview(payload);
@@ -649,29 +545,29 @@ export default function DocumentWizard() {
             <section className="rounded-xl border border-[var(--ssu-border)] bg-white p-5 shadow-sm">
               <p className="text-[14px] font-bold text-slate-900">행사 기본 정보</p>
               <div className="mt-4 space-y-3">
-                <Field label="행사명">
+                <WizardField label="행사명">
                   <input
                     value={eventName}
                     onChange={(e) => setEventName(e.target.value)}
                     className="field-input"
                   />
-                </Field>
-                <Field label="대상">
+                </WizardField>
+                <WizardField label="대상">
                   <input
                     value={target}
                     onChange={(e) => setTarget(e.target.value)}
                     className="field-input"
                   />
-                </Field>
-                <Field label="참석 예정 인원">
+                </WizardField>
+                <WizardField label="참석 예정 인원">
                   <input
                     value={attendees}
                     onChange={(e) => setAttendees(e.target.value.replace(/[^\d]/g, ""))}
                     className="field-input"
                     inputMode="numeric"
                   />
-                </Field>
-                <Field label="일시">
+                </WizardField>
+                <WizardField label="일시">
                   <div className="relative">
                     <input
                       value={schedule}
@@ -680,21 +576,21 @@ export default function DocumentWizard() {
                     />
                     <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   </div>
-                </Field>
-                <Field label="장소">
+                </WizardField>
+                <WizardField label="장소">
                   <input
                     value={location}
                     onChange={(e) => setLocation(e.target.value)}
                     className="field-input"
                   />
-                </Field>
-                <Field label="주관 부서">
+                </WizardField>
+                <WizardField label="주관 부서">
                   <input
                     value={department}
                     onChange={(e) => setDepartment(e.target.value)}
                     className="field-input"
                   />
-                </Field>
+                </WizardField>
               </div>
             </section>
 
@@ -946,7 +842,7 @@ export default function DocumentWizard() {
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div>
                 <p className="text-[12px] font-medium text-slate-600">총 예산 한도</p>
-                <p className="mt-1 text-[18px] font-bold text-slate-900">{won(budgetLimitNumber)}</p>
+                <p className="mt-1 text-[18px] font-bold text-slate-900">{formatWon(budgetLimitNumber)}</p>
                 <p className="mt-1 text-[11px] text-slate-400">
                   기본정보에서 입력한 한도입니다. 항목별 단가·수량만 수정하세요.
                 </p>
@@ -954,7 +850,7 @@ export default function DocumentWizard() {
               <div className="rounded-lg bg-slate-50 px-4 py-3">
                 <div className="flex justify-between text-[12px] text-slate-600">
                   <span>합계</span>
-                  <span className="font-semibold text-slate-900">{won(budgetTotal)}</span>
+                  <span className="font-semibold text-slate-900">{formatWon(budgetTotal)}</span>
                 </div>
                 <div className="mt-1 flex justify-between text-[12px] text-slate-600">
                   <span>잔여</span>
@@ -963,7 +859,7 @@ export default function DocumentWizard() {
                       budgetRemaining < 0 ? "text-red-600" : "text-emerald-700"
                     }`}
                   >
-                    {won(budgetRemaining)}
+                    {formatWon(budgetRemaining)}
                   </span>
                 </div>
               </div>
@@ -1024,7 +920,7 @@ export default function DocumentWizard() {
                         />
                       </td>
                       <td className="px-2 py-2 text-right font-semibold text-slate-800">
-                        {won(row.unit_price * row.quantity)}
+                        {formatWon(row.unit_price * row.quantity)}
                       </td>
                     </tr>
                   ))}
@@ -1221,165 +1117,6 @@ export default function DocumentWizard() {
           box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
         }
       `}</style>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <span className="text-[12px] font-medium text-slate-600">{label}</span>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function OwnerInput({
-  value,
-  staffList,
-  active,
-  onActivate,
-  onChange,
-  onCommit,
-  onDeleteStaff,
-}: {
-  value: string;
-  staffList: StaffPerson[];
-  active: boolean;
-  onActivate: () => void;
-  onChange: (value: string) => void;
-  onCommit: (name: string) => void;
-  onDeleteStaff: (id: number) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 160 });
-
-  const filtered = staffList.filter((p) =>
-    value.trim() ? p.name.toLowerCase().includes(value.trim().toLowerCase()) : true
-  );
-
-  const updateMenuPos = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    setMenuPos({
-      top: rect.bottom + 4,
-      left: rect.left,
-      width: Math.max(rect.width, 160),
-    });
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    updateMenuPos();
-    const onScroll = () => updateMenuPos();
-    window.addEventListener("resize", onScroll);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      window.removeEventListener("resize", onScroll);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [open, value, staffList.length]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (inputRef.current?.contains(target)) return;
-      const menu = document.getElementById("owner-suggest-menu");
-      if (menu?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
-  }, [open]);
-
-  const showMenu = open && filtered.length > 0;
-
-  return (
-    <div className="relative">
-      <input
-        ref={inputRef}
-        value={value}
-        placeholder="이름 입력"
-        onFocus={() => {
-          onActivate();
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onClick={() => {
-          onActivate();
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onChange={(e) => {
-          onChange(e.target.value);
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onBlur={() => {
-          // 메뉴 클릭보다 먼저 blur가 뜨므로 약간 지연
-          window.setTimeout(() => {
-            if (value.trim()) onCommit(value);
-          }, 150);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            if (value.trim()) {
-              onCommit(value);
-              setOpen(false);
-            }
-          }
-          if (e.key === "Escape") setOpen(false);
-        }}
-        className={`field-input text-[12px] ${
-          active ? "border-[var(--ssu-blue)] ring-2 ring-blue-100" : ""
-        }`}
-      />
-      {showMenu &&
-        createPortal(
-          <ul
-            id="owner-suggest-menu"
-            className="fixed z-[1000] max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
-            style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width }}
-          >
-            {filtered.map((person) => (
-              <li
-                key={person.id}
-                className="flex items-center justify-between gap-2 px-2 py-1.5 hover:bg-slate-50"
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 truncate text-left text-[12px] text-slate-700"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onChange(person.name);
-                    onCommit(person.name);
-                    setOpen(false);
-                  }}
-                >
-                  {person.name}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`${person.name} 삭제`}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onDeleteStaff(person.id);
-                  }}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </li>
-            ))}
-          </ul>,
-          document.body
-        )}
     </div>
   );
 }

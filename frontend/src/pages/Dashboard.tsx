@@ -149,6 +149,7 @@ function statusClass(statusKey?: string, label?: string) {
   if (key === "approved" || label?.includes("승인")) return "bg-emerald-50 text-emerald-700";
   if (key === "archived" || label?.includes("보관") || label?.includes("게시"))
     return "bg-blue-50 text-blue-700";
+  if (key === "issue" || label?.includes("문제")) return "bg-red-50 text-red-700";
   if (key === "review" || label?.includes("검토") || label?.includes("확인"))
     return "bg-orange-50 text-orange-700";
   if (key === "draft" || label?.includes("작성") || label?.includes("초안"))
@@ -175,7 +176,7 @@ const FALLBACK_DOCS: RecentDoc[] = [
     name: "고교 방문 홍보계획서.pdf",
     type: "계획서",
     updated: "2026-05-18T11:05:00",
-    status: "직원 확인 필요",
+    status: "검토 필요",
     status_key: "review",
   },
   {

@@ -16,14 +16,14 @@ router = APIRouter(prefix="/api/archive", tags=["archive"])
 
 
 class StatusUpdate(BaseModel):
-    status: str = Field(..., pattern="^(draft|review|approved|archived)$")
+    status: str = Field(..., pattern="^(draft|issue|review|approved|archived)$")
     modifier: str = "입학팀 담당자"
 
 
 @router.get("")
 def list_archive(
     q: str | None = None,
-    status: str | None = Query(None, description="draft|review|approved|archived|all"),
+    status: str | None = Query(None, description="draft|issue|review|approved|archived|all"),
     doc_type: str | None = None,
     admission_category: str | None = None,
     academic_year: str | None = None,

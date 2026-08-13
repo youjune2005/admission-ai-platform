@@ -1,15 +1,14 @@
 import json
-from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.routes.staff import upsert_staff_names
 from app.db.database import get_db
 from app.db.models import BriefingPlan, GeneratedDocument
-from app.api.routes.staff import upsert_staff_names
-from app.services.archive_service import upsert_generated_document
+from app.schemas.archive_meta import ARCHIVE_WRITE_EXCLUDE, ArchiveWriteMixin
+from app.services.archive_service import file_url, resolve_archive_status, upsert_generated_document
 from app.services.briefing_plan_service import generate_briefing_plan_pdf
 from app.services.outreach_plan_service import generate_outreach_plan_pdf
 
@@ -29,7 +28,7 @@ class BudgetLineItem(BaseModel):
     quantity: int = 1
 
 
-class BriefingPlanCreate(BaseModel):
+class BriefingPlanCreate(ArchiveWriteMixin):
     event_name: str
     target: str = ""
     attendees: str = "100"
@@ -40,10 +39,9 @@ class BriefingPlanCreate(BaseModel):
     budget_items: list[str] = Field(default_factory=list)
     budget_lines: list[BudgetLineItem] = Field(default_factory=list)
     programs: list[ProgramItem] = Field(default_factory=list)
-    archive_id: int | None = None
 
 
-class VisitPlanCreate(BaseModel):
+class VisitPlanCreate(ArchiveWriteMixin):
     event_name: str
     school_name: str = ""
     region: str = ""
@@ -58,10 +56,9 @@ class VisitPlanCreate(BaseModel):
     materials: str = ""
     notes: str = ""
     programs: list[ProgramItem] = Field(default_factory=list)
-    archive_id: int | None = None
 
 
-class FairPlanCreate(BaseModel):
+class FairPlanCreate(ArchiveWriteMixin):
     event_name: str
     host: str = ""
     booth_no: str = ""
@@ -75,7 +72,6 @@ class FairPlanCreate(BaseModel):
     consulting_focus: str = ""
     notes: str = ""
     programs: list[ProgramItem] = Field(default_factory=list)
-    archive_id: int | None = None
 
 
 class BriefingPlanOut(BaseModel):
@@ -86,13 +82,6 @@ class BriefingPlanOut(BaseModel):
     preview_url: str | None = None
     payload: dict
     archive_id: int | None = None
-
-
-def _file_url(path: str | None) -> str | None:
-    if not path:
-        return None
-    name = Path(path).name
-    return f"/api/forms/files/{quote(name)}"
 
 
 def _create_plan_record(
@@ -106,6 +95,8 @@ def _create_plan_record(
     generate,
     author: str,
     existing_id: int | None = None,
+    archive_status: str | None = None,
+    regulation_summary: dict | None = None,
 ) -> BriefingPlanOut:
     if existing_id is not None:
         existing = db.get(GeneratedDocument, existing_id)
@@ -149,7 +140,11 @@ def _create_plan_record(
         admission_category="수시",
         academic_year="2027",
         author=author,
-        status="approved",
+        status=resolve_archive_status(
+            archive_status=archive_status,
+            regulation_summary=regulation_summary,
+            default="draft",
+        ),
         existing_id=existing_id,
     )
 
@@ -157,8 +152,8 @@ def _create_plan_record(
         id=plan.id,
         title=plan.title,
         status=plan.status,
-        pdf_url=_file_url(plan.pdf_path),
-        preview_url=_file_url(plan.preview_path),
+        pdf_url=file_url(plan.pdf_path),
+        preview_url=file_url(plan.preview_path),
         payload=data,
         archive_id=archived.id,
     )
@@ -166,7 +161,7 @@ def _create_plan_record(
 
 @router.post("/briefing", response_model=BriefingPlanOut)
 def create_briefing_plan(payload: BriefingPlanCreate, db: Session = Depends(get_db)):
-    data = payload.model_dump(exclude={"archive_id"})
+    data = payload.model_dump(exclude=ARCHIVE_WRITE_EXCLUDE)
     title = f"{payload.event_name} 운영계획서"
     owners = [p.owner for p in payload.programs if p.owner]
     if payload.department:
@@ -181,12 +176,17 @@ def create_briefing_plan(payload: BriefingPlanCreate, db: Session = Depends(get_
         generate=generate_briefing_plan_pdf,
         author=payload.department or "입학팀 담당자",
         existing_id=payload.archive_id,
+        archive_status=payload.archive_status,
+        regulation_summary=payload.regulation_summary,
     )
 
 
 @router.post("/visit", response_model=BriefingPlanOut)
 def create_visit_plan(payload: VisitPlanCreate, db: Session = Depends(get_db)):
-    data = {**payload.model_dump(exclude={"archive_id"}), "plan_kind": "visit"}
+    data = {
+        **payload.model_dump(exclude=ARCHIVE_WRITE_EXCLUDE),
+        "plan_kind": "visit",
+    }
     title = f"{payload.event_name} 홍보계획서"
     owners = [p.owner for p in payload.programs if p.owner]
     if payload.department:
@@ -205,12 +205,17 @@ def create_visit_plan(payload: VisitPlanCreate, db: Session = Depends(get_db)):
         ),
         author=payload.department or "입학팀 담당자",
         existing_id=payload.archive_id,
+        archive_status=payload.archive_status,
+        regulation_summary=payload.regulation_summary,
     )
 
 
 @router.post("/fair", response_model=BriefingPlanOut)
 def create_fair_plan(payload: FairPlanCreate, db: Session = Depends(get_db)):
-    data = {**payload.model_dump(exclude={"archive_id"}), "plan_kind": "fair"}
+    data = {
+        **payload.model_dump(exclude=ARCHIVE_WRITE_EXCLUDE),
+        "plan_kind": "fair",
+    }
     title = f"{payload.event_name} 참가계획서"
     owners = [p.owner for p in payload.programs if p.owner]
     if payload.department:
@@ -227,6 +232,8 @@ def create_fair_plan(payload: FairPlanCreate, db: Session = Depends(get_db)):
         ),
         author=payload.department or "입학팀 담당자",
         existing_id=payload.archive_id,
+        archive_status=payload.archive_status,
+        regulation_summary=payload.regulation_summary,
     )
 
 
@@ -239,7 +246,7 @@ def get_briefing_plan(plan_id: int, db: Session = Depends(get_db)):
         id=plan.id,
         title=plan.title,
         status=plan.status,
-        pdf_url=_file_url(plan.pdf_path),
-        preview_url=_file_url(plan.preview_path),
+        pdf_url=file_url(plan.pdf_path),
+        preview_url=file_url(plan.preview_path),
         payload=json.loads(plan.payload_json),
     )

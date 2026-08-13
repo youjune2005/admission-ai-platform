@@ -129,7 +129,7 @@ export interface DocumentListResponse {
   categories: string[];
 }
 
-export type ArchiveStatus = "draft" | "review" | "approved" | "archived";
+export type ArchiveStatus = "draft" | "issue" | "review" | "approved" | "archived";
 
 export interface GeneratedDocument {
   id: number;

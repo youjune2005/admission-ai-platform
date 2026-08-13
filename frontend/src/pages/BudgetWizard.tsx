@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowLeft,
-  Check,
   FileDown,
   FileText,
   LoaderCircle,
@@ -17,12 +16,20 @@ import StepTransition from "../components/StepTransition";
 import ContentReviewPanel from "../components/ContentReviewPanel";
 import RegulationReviewPanel from "../components/RegulationReviewPanel";
 import { BUDGET_FLOW_STEPS, flowStepFromWizard } from "../constants/documentFlow";
-import { asNumber, asRecord, asString } from "../lib/archiveWizard";
+import { useArchiveHydration } from "../hooks/useArchiveHydration";
+import {
+  archiveAndLeave,
+  archiveStatusFromRegulation,
+  asNumber,
+  asRecord,
+  asString,
+  formatWon,
+  mapPayloadRows,
+} from "../lib/archiveWizard";
 import { applyReviewPatches } from "../lib/reviewPatches";
 import type {
   ContentReviewPatch,
   ContentReviewResult,
-  GeneratedDocument,
   RegulationReviewResult,
 } from "../types";
 
@@ -85,10 +92,6 @@ const DEFAULT_ROWS: BudgetRow[] = [
   },
 ];
 
-function won(n: number) {
-  return `${Number(n || 0).toLocaleString("ko-KR")}원`;
-}
-
 function statusClass(status: string) {
   if (status === "적합") return "bg-emerald-50 text-emerald-700";
   if (status === "견적서 필요") return "bg-orange-50 text-orange-700";
@@ -111,7 +114,6 @@ export default function BudgetWizard() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
-  const [hydrating, setHydrating] = useState(!!archiveIdParam);
   const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
   const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
   const [regulationReview, setRegulationReview] = useState<RegulationReviewResult | null>(null);
@@ -123,52 +125,28 @@ export default function BudgetWizard() {
   );
   const remaining = allocated - total;
 
-  useEffect(() => {
-    if (!archiveIdParam) return;
-    const id = Number(archiveIdParam);
-    if (!Number.isFinite(id) || id <= 0) {
-      setHydrating(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await apiClient.get<GeneratedDocument>(`/api/archive/${id}`);
-        if (cancelled) return;
-        const p = asRecord(data.payload) ?? {};
-        setArchiveId(data.id);
-        setTitle(asString(p.title, data.title || "2027학년도 수시 입시설명회 예상 예산안"));
-        setAllocated(asNumber(p.allocated_budget, 1500000));
-        const itemRows: BudgetRow[] = Array.isArray(p.items)
-          ? p.items.flatMap((row, idx) => {
-              const rec = asRecord(row);
-              if (!rec) return [];
-              return [
-                {
-                  id: `resume-${idx}`,
-                  name: asString(rec.name),
-                  basis: asString(rec.basis),
-                  unit_price: asNumber(rec.unit_price),
-                  quantity: asNumber(rec.quantity, 1),
-                  status: asString(rec.status) || undefined,
-                },
-              ];
-            })
-          : [];
-        if (itemRows.length) setRows(itemRows);
-        setPdfUrl(null);
-        setPreviewUrl(null);
-        setStep(1);
-      } catch {
-        setError("작성 중이던 문서를 불러오지 못했습니다.");
-      } finally {
-        if (!cancelled) setHydrating(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [archiveIdParam]);
+  const hydrating = useArchiveHydration(
+    archiveIdParam,
+    (data) => {
+      const p = asRecord(data.payload) ?? {};
+      setArchiveId(data.id);
+      setTitle(asString(p.title, data.title || "2027학년도 수시 입시설명회 예상 예산안"));
+      setAllocated(asNumber(p.allocated_budget, 1500000));
+      const itemRows = mapPayloadRows<BudgetRow>(p.items, (rec, idx) => ({
+        id: `resume-${idx}`,
+        name: asString(rec.name),
+        basis: asString(rec.basis),
+        unit_price: asNumber(rec.unit_price),
+        quantity: asNumber(rec.quantity, 1),
+        status: asString(rec.status) || undefined,
+      }));
+      if (itemRows.length) setRows(itemRows);
+      setPdfUrl(null);
+      setPreviewUrl(null);
+      setStep(1);
+    },
+    setError,
+  );
 
   const updateRow = (id: string, patch: Partial<BudgetRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -210,31 +188,25 @@ export default function BudgetWizard() {
   const applyBudgetPayload = (p: Record<string, unknown>) => {
     setTitle(asString(p.title, title));
     if (p.allocated_budget != null) setAllocated(asNumber(p.allocated_budget, allocated));
-    const itemRows: BudgetRow[] = Array.isArray(p.items)
-      ? p.items.flatMap((row, idx) => {
-          const rec = asRecord(row);
-          if (!rec) return [];
-          return [
-            {
-              id: rows[idx]?.id ?? `patched-${idx}`,
-              name: asString(rec.name),
-              basis: asString(rec.basis),
-              unit_price: asNumber(rec.unit_price),
-              quantity: asNumber(rec.quantity, 1),
-              status: asString(rec.status) || undefined,
-            },
-          ];
-        })
-      : [];
-    if (itemRows.length) setRows(itemRows);
+    setRows((prev) => {
+      const itemRows = mapPayloadRows<BudgetRow>(p.items, (rec, idx) => ({
+        id: prev[idx]?.id ?? `patched-${idx}`,
+        name: asString(rec.name),
+        basis: asString(rec.basis),
+        unit_price: asNumber(rec.unit_price),
+        quantity: asNumber(rec.quantity, 1),
+        status: asString(rec.status) || undefined,
+      }));
+      return itemRows.length ? itemRows : prev;
+    });
   };
 
   const goToBudgetEdit = async (payload: ReturnType<typeof buildBudgetPayload>) => {
     const { data } = await apiClient.post<ReviewResult>("/api/budget/review", payload);
     setReview(data);
-    setRows(
+    setRows((prev) =>
       data.items.map((item, idx) => ({
-        id: rows[idx]?.id ?? `${idx}`,
+        id: prev[idx]?.id ?? `${idx}`,
         name: item.name,
         basis: item.basis,
         unit_price: item.unit_price,
@@ -384,6 +356,8 @@ export default function BudgetWizard() {
         allocated_budget: allocated,
         items: payloadItems(),
         archive_id: archiveId,
+        archive_status: archiveStatusFromRegulation(regulationReview),
+        regulation_summary: regulationReview?.summary ?? null,
       });
       setPlanId(data.id);
       setArchiveId(data.archive_id ?? null);
@@ -398,12 +372,7 @@ export default function BudgetWizard() {
   const saveToArchive = async () => {
     setSavingArchive(true);
     try {
-      if (archiveId != null) {
-        await apiClient.patch(`/api/archive/${archiveId}/status`, { status: "archived" });
-      }
-      navigate("/archive");
-    } catch {
-      navigate("/archive");
+      await archiveAndLeave(archiveId, navigate);
     } finally {
       setSavingArchive(false);
     }
@@ -562,7 +531,7 @@ export default function BudgetWizard() {
                         />
                       </td>
                       <td className="px-2 py-2 text-right font-semibold text-slate-800">
-                        {won(row.unit_price * row.quantity)}
+                        {formatWon(row.unit_price * row.quantity)}
                       </td>
                       <td className="px-2 py-2">
                         <button
@@ -581,10 +550,10 @@ export default function BudgetWizard() {
 
             <div className="mt-4 flex flex-col items-end gap-1 text-[13px]">
               <p>
-                총 예산액 <span className="ml-3 font-bold text-slate-900">{won(total)}</span>
+                총 예산액 <span className="ml-3 font-bold text-slate-900">{formatWon(total)}</span>
               </p>
               <p>
-                배정 예산 <span className="ml-3 font-semibold text-slate-700">{won(allocated)}</span>
+                배정 예산 <span className="ml-3 font-semibold text-slate-700">{formatWon(allocated)}</span>
               </p>
               <p>
                 잔여 예산{" "}
@@ -593,7 +562,7 @@ export default function BudgetWizard() {
                     remaining >= 0 ? "text-[var(--ssu-blue)]" : "text-red-600"
                   }`}
                 >
-                  {won(remaining)}
+                  {formatWon(remaining)}
                 </span>
               </p>
             </div>
@@ -723,7 +692,7 @@ export default function BudgetWizard() {
                           />
                         </td>
                         <td className="px-2 py-2 text-right font-semibold">
-                          {won(row.unit_price * row.quantity)}
+                          {formatWon(row.unit_price * row.quantity)}
                         </td>
                         <td className="px-2 py-2">
                           <span
@@ -742,10 +711,10 @@ export default function BudgetWizard() {
 
               <div className="mt-4 flex flex-col items-end gap-1 text-[13px]">
                 <p>
-                  총 예산액 <span className="ml-3 font-bold">{won(total)}</span>
+                  총 예산액 <span className="ml-3 font-bold">{formatWon(total)}</span>
                 </p>
                 <p>
-                  배정 예산 <span className="ml-3 font-semibold text-slate-700">{won(allocated)}</span>
+                  배정 예산 <span className="ml-3 font-semibold text-slate-700">{formatWon(allocated)}</span>
                 </p>
                 <p>
                   잔여 예산{" "}
@@ -754,7 +723,7 @@ export default function BudgetWizard() {
                       remaining >= 0 ? "text-[var(--ssu-blue)]" : "text-red-600"
                     }`}
                   >
-                    {won(remaining)}
+                    {formatWon(remaining)}
                   </span>
                 </p>
               </div>
@@ -919,11 +888,11 @@ export default function BudgetWizard() {
                 </div>
                 <div className="flex justify-between gap-2">
                   <dt className="text-slate-500">총 예산</dt>
-                  <dd className="font-medium">{won(total)}</dd>
+                  <dd className="font-medium">{formatWon(total)}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
                   <dt className="text-slate-500">잔여 예산</dt>
-                  <dd className="font-medium text-[var(--ssu-blue)]">{won(remaining)}</dd>
+                  <dd className="font-medium text-[var(--ssu-blue)]">{formatWon(remaining)}</dd>
                 </div>
                 <div className="flex justify-between gap-2">
                   <dt className="text-slate-500">문서 ID</dt>

@@ -17,10 +17,60 @@ from app.db.models import BriefingPlan, GeneratedDocument
 
 STATUS_LABELS = {
     "draft": "작성 중",
-    "review": "직원 확인 필요",
+    "issue": "문제 있음",
+    "review": "검토 필요",
     "approved": "승인 완료",
     "archived": "보관 완료",
 }
+
+ARCHIVE_STATUSES = ("draft", "issue", "review", "approved", "archived")
+
+
+def status_from_regulation_summary(summary: dict[str, Any] | None) -> str:
+    if not summary:
+        return "approved"
+    try:
+        violations = int(summary.get("violations") or 0)
+    except (TypeError, ValueError):
+        violations = 0
+    try:
+        checks = int(summary.get("needs_check") or 0)
+    except (TypeError, ValueError):
+        checks = 0
+    if violations > 0:
+        return "issue"
+    if checks > 0:
+        return "review"
+    return "approved"
+
+
+def resolve_archive_status(
+    *,
+    archive_status: str | None = None,
+    regulation_summary: dict[str, Any] | None = None,
+    default: str = "approved",
+) -> str:
+    if archive_status in ARCHIVE_STATUSES:
+        return archive_status
+    if regulation_summary:
+        return status_from_regulation_summary(regulation_summary)
+    return default if default in ARCHIVE_STATUSES else "approved"
+
+
+def _apply_status_timestamps(doc: GeneratedDocument, status: str, now: datetime) -> None:
+    if status in ("approved", "archived"):
+        if not doc.approved_at:
+            doc.approver = doc.approver or "입학팀 팀장"
+            doc.approved_at = now
+        if status == "archived":
+            doc.archived_at = now
+            doc.archive_location = doc.archive_location or "문서 보관함"
+        return
+    doc.approver = None
+    doc.approved_at = None
+    if status != "archived":
+        doc.archived_at = None
+
 
 KIND_DOC_TYPE = {
     "briefing": "계획서",
@@ -128,11 +178,12 @@ def upsert_generated_document(
             pdf_path=pdf_path,
             preview_path=preview_path,
             payload_json=json.dumps(payload or {}, ensure_ascii=False),
-            approver="입학팀 팀장" if status in ("approved", "archived") else None,
-            approved_at=now if status in ("approved", "archived") else None,
-            archived_at=now if status == "archived" else None,
-            archive_location="문서 보관함" if status == "archived" else None,
+            approver=None,
+            approved_at=None,
+            archived_at=None,
+            archive_location=None,
         )
+        _apply_status_timestamps(doc, status, now)
         db.add(doc)
     else:
         next_payload = json.dumps(payload or {}, ensure_ascii=False)
@@ -163,12 +214,7 @@ def upsert_generated_document(
         doc.payload_json = next_payload
         if status:
             doc.status = status
-            if status in ("approved", "archived") and not doc.approved_at:
-                doc.approver = doc.approver or "입학팀 팀장"
-                doc.approved_at = now
-            if status == "archived":
-                doc.archived_at = now
-                doc.archive_location = doc.archive_location or "문서 보관함"
+            _apply_status_timestamps(doc, status, now)
         if content_changed:
             doc.last_modifier = author
             if touch_updated_at:
@@ -375,6 +421,7 @@ def list_documents(
     counts = {
         "all": base.count(),
         "draft": base.filter(GeneratedDocument.status == "draft").count(),
+        "issue": base.filter(GeneratedDocument.status == "issue").count(),
         "review": base.filter(GeneratedDocument.status == "review").count(),
         "approved": base.filter(GeneratedDocument.status == "approved").count(),
         "archived": base.filter(GeneratedDocument.status == "archived").count(),
@@ -424,12 +471,7 @@ def update_status(
     doc.status = status
     doc.last_modifier = modifier
     doc.updated_at = now
-    if status in ("approved", "archived") and not doc.approved_at:
-        doc.approver = doc.approver or "입학팀 팀장"
-        doc.approved_at = now
-    if status == "archived":
-        doc.archived_at = now
-        doc.archive_location = doc.archive_location or "문서 보관함"
+    _apply_status_timestamps(doc, status, now)
     db.commit()
     db.refresh(doc)
     return doc

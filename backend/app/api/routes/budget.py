@@ -1,6 +1,4 @@
 import json
-from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -8,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import BriefingPlan, GeneratedDocument
-from app.services.archive_service import upsert_generated_document
+from app.schemas.archive_meta import ArchiveWriteMixin
+from app.services.archive_service import file_url, resolve_archive_status, upsert_generated_document
 from app.services.budget_plan_service import generate_budget_statement_pdf, review_budget
 
 router = APIRouter(prefix="/api/budget", tags=["budget"])
@@ -29,11 +28,10 @@ class BudgetReviewRequest(BaseModel):
     items: list[BudgetItemIn] = Field(default_factory=list)
 
 
-class BudgetFinalizeRequest(BaseModel):
+class BudgetFinalizeRequest(ArchiveWriteMixin):
     title: str = "예상 예산안"
     allocated_budget: int = 0
     items: list[BudgetItemIn] = Field(default_factory=list)
-    archive_id: int | None = None
 
 
 def _normalize_items(items: list[BudgetItemIn]) -> list[dict]:
@@ -53,12 +51,6 @@ def _normalize_items(items: list[BudgetItemIn]) -> list[dict]:
             }
         )
     return rows
-
-
-def _file_url(path: str | None) -> str | None:
-    if not path:
-        return None
-    return f"/api/forms/files/{quote(Path(path).name)}"
 
 
 @router.post("/review")
@@ -127,7 +119,11 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
         admission_category="수시",
         academic_year="2027",
         author="입학팀 담당자",
-        status="approved",
+        status=resolve_archive_status(
+            archive_status=payload.archive_status,
+            regulation_summary=payload.regulation_summary,
+            default="approved",
+        ),
         existing_id=payload.archive_id,
     )
 
@@ -136,8 +132,8 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
         "id": plan.id,
         "title": plan.title,
         "status": plan.status,
-        "pdf_url": _file_url(plan.pdf_path),
-        "preview_url": _file_url(plan.preview_path),
+        "pdf_url": file_url(plan.pdf_path),
+        "preview_url": file_url(plan.preview_path),
         "archive_id": archived.id,
         "review": review,
     }

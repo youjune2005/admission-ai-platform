@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check } from "lucide-react";
 import type { ContentReviewIssue, ContentReviewOption, ContentReviewPatch, ContentReviewResult } from "../types";
 
@@ -37,6 +37,9 @@ export default function ContentReviewPanel({ result, busy, onApply, onSkip }: Pr
     return initial;
   }, [result.issues]);
   const [selected, setSelected] = useState<Record<string, string>>(choices);
+  useEffect(() => {
+    setSelected(choices);
+  }, [choices]);
 
   const patches = useMemo(() => {
     const next: ContentReviewPatch[] = [];

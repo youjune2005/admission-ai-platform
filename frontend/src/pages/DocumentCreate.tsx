@@ -14,6 +14,7 @@ import type { LucideIcon } from "lucide-react";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
 import { BRIEFING_FLOW_STEPS, BUDGET_FLOW_STEPS, OUTREACH_FLOW_STEPS } from "../constants/documentFlow";
+import { sleep } from "../lib/archiveWizard";
 
 type Template = {
   id: string;
@@ -75,10 +76,6 @@ const recent = [
   { templateId: "interview", title: "면접·실기 운영 보조문서", date: "2025-04-30" },
   { templateId: "budget", title: "예상 예산안", date: "2025-04-18" },
 ];
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export default function DocumentCreate() {
   const navigate = useNavigate();

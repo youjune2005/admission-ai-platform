@@ -28,7 +28,8 @@ import type { ArchiveListResponse, ArchiveStatus, GeneratedDocument } from "../t
 const statusTabs: { key: "all" | ArchiveStatus; label: string }[] = [
   { key: "all", label: "전체" },
   { key: "draft", label: "작성 중" },
-  { key: "review", label: "직원 확인 필요" },
+  { key: "issue", label: "문제 있음" },
+  { key: "review", label: "검토 필요" },
   { key: "approved", label: "승인 완료" },
   { key: "archived", label: "보관 완료" },
 ];
@@ -75,6 +76,8 @@ function statusClass(status: ArchiveStatus) {
   switch (status) {
     case "approved":
       return "bg-emerald-50 text-emerald-700";
+    case "issue":
+      return "bg-red-50 text-red-700";
     case "review":
       return "bg-orange-50 text-orange-700";
     case "draft":
@@ -152,7 +155,7 @@ export default function Archive() {
         total: 0,
         page: 1,
         page_size: 10,
-        counts: { all: 0, draft: 0, review: 0, approved: 0, archived: 0 },
+        counts: { all: 0, draft: 0, issue: 0, review: 0, approved: 0, archived: 0 },
         facets: { academic_years: [], admission_categories: [], doc_types: [] },
       });
       setLoadError(e instanceof Error ? e.message : "보관함 목록을 불러오지 못했습니다.");

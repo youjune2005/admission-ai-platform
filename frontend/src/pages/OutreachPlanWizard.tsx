@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -14,36 +13,35 @@ import {
   X,
 } from "lucide-react";
 import { API_BASE_URL, apiClient } from "../api/client";
+import OwnerInput from "../components/OwnerInput";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
 import ContentReviewPanel from "../components/ContentReviewPanel";
 import RegulationReviewPanel from "../components/RegulationReviewPanel";
+import WizardField from "../components/WizardField";
 import {
   OUTREACH_FLOW_STEPS,
   flowStepFromWizard,
 } from "../constants/documentFlow";
-import { asRecord, asString } from "../lib/archiveWizard";
+import { useArchiveHydration } from "../hooks/useArchiveHydration";
+import { useStaffDirectory } from "../hooks/useStaffDirectory";
+import {
+  applyArchiveReviewStatus,
+  archiveAndLeave,
+  asRecord,
+  asString,
+  parseProgramRows,
+  sleep,
+  type ProgramRow,
+} from "../lib/archiveWizard";
 import { applyReviewPatches } from "../lib/reviewPatches";
 import type {
   ContentReviewPatch,
   ContentReviewResult,
-  GeneratedDocument,
   RegulationReviewResult,
 } from "../types";
 
 export type OutreachKind = "visit" | "fair";
-
-type ProgramRow = {
-  id: string;
-  time: string;
-  content: string;
-  owner: string;
-};
-
-type StaffPerson = {
-  id: number;
-  name: string;
-};
 
 type WizardStep = 1 | 2 | 3 | 4 | 5;
 
@@ -68,10 +66,6 @@ const FAIR_DEFAULT_PROGRAMS: ProgramRow[] = [
   { id: "2", time: "12:00~17:00", content: "전형 상담·안내", owner: "" },
   { id: "3", time: "17:00~18:00", content: "정리 및 인수인계", owner: "" },
 ];
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
   const navigate = useNavigate();
@@ -115,7 +109,7 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
   const [programs, setPrograms] = useState<ProgramRow[]>(
     isVisit ? VISIT_DEFAULT_PROGRAMS : FAIR_DEFAULT_PROGRAMS
   );
-  const [staffList, setStaffList] = useState<StaffPerson[]>([]);
+  const { staffList, loadStaff, saveStaffName, deleteStaff } = useStaffDirectory();
   const [activeOwnerId, setActiveOwnerId] = useState<string | null>(null);
 
   const [loadingLabel, setLoadingLabel] = useState("");
@@ -125,7 +119,6 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
-  const [hydrating, setHydrating] = useState(!!archiveIdParam);
   const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
   const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
   const [regulationReview, setRegulationReview] = useState<RegulationReviewResult | null>(null);
@@ -136,99 +129,43 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
     [eventName, docTypeLabel]
   );
 
-  const loadStaff = async () => {
-    const res = await apiClient.get<StaffPerson[]>("/api/staff");
-    setStaffList(res.data);
-  };
-
-  useEffect(() => {
-    loadStaff().catch(() => setStaffList([]));
-  }, []);
-
-  useEffect(() => {
-    if (!archiveIdParam) return;
-    const id = Number(archiveIdParam);
-    if (!Number.isFinite(id) || id <= 0) {
-      setHydrating(false);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await apiClient.get<GeneratedDocument>(`/api/archive/${id}`);
-        if (cancelled) return;
-        const p = asRecord(data.payload) ?? {};
-        setArchiveId(data.id);
-        setEventName(
-          asString(
-            p.event_name,
-            isVisit ? "2027학년도 ○○고등학교 방문 홍보" : "2026 대입정보 박람회"
-          )
-        );
-        setSchoolName(asString(p.school_name));
-        setRegion(asString(p.region, "서울"));
-        setHost(asString(p.host, "한국대학교육협의회"));
-        setBoothNo(asString(p.booth_no));
-        setTarget(
-          asString(p.target, isVisit ? "3학년 학생 및 진학담당 교사" : "고등학생 및 학부모")
-        );
-        setAttendees(asString(p.attendees, isVisit ? "50" : "200"));
-        setSchedule(asString(p.schedule));
-        setLocation(asString(p.location));
-        setFormat(asString(p.format, "오프라인"));
-        setContactTeacher(asString(p.contact_teacher));
-        setStaffCount(asString(p.staff_count, "입학팀 3명"));
-        setDepartment(asString(p.department, "입학팀"));
-        setEquipment(asString(p.equipment, "노트북, 빔프로젝터, 마이크"));
-        setMaterials(asString(p.materials));
-        setConsultingFocus(asString(p.consulting_focus));
-        setNotes(asString(p.notes));
-        const programRows: ProgramRow[] = Array.isArray(p.programs)
-          ? p.programs.flatMap((row, idx) => {
-              const rec = asRecord(row);
-              if (!rec) return [];
-              return [
-                {
-                  id: `resume-${idx}`,
-                  time: asString(rec.time),
-                  content: asString(rec.content),
-                  owner: asString(rec.owner),
-                },
-              ];
-            })
-          : [];
-        if (programRows.length) setPrograms(programRows);
-        setPdfUrl(null);
-        setPreviewUrl(null);
-        setStep(1);
-      } catch {
-        setError("작성 중이던 문서를 불러오지 못했습니다.");
-      } finally {
-        if (!cancelled) setHydrating(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [archiveIdParam, isVisit]);
-
-  const saveStaffName = async (raw: string) => {
-    const name = raw.trim();
-    if (!name) return null;
-    const res = await apiClient.post<StaffPerson>("/api/staff", { name });
-    setStaffList((prev) => {
-      if (prev.some((p) => p.id === res.data.id || p.name === res.data.name)) {
-        return prev.map((p) => (p.id === res.data.id ? res.data : p));
-      }
-      return [...prev, res.data].sort((a, b) => a.name.localeCompare(b.name, "ko"));
-    });
-    return res.data;
-  };
-
-  const deleteStaff = async (id: number) => {
-    await apiClient.delete(`/api/staff/${id}`);
-    setStaffList((prev) => prev.filter((p) => p.id !== id));
-  };
+  const hydrating = useArchiveHydration(
+    archiveIdParam,
+    (data) => {
+      const p = asRecord(data.payload) ?? {};
+      setArchiveId(data.id);
+      setEventName(
+        asString(
+          p.event_name,
+          isVisit ? "2027학년도 ○○고등학교 방문 홍보" : "2026 대입정보 박람회"
+        )
+      );
+      setSchoolName(asString(p.school_name));
+      setRegion(asString(p.region, "서울"));
+      setHost(asString(p.host, "한국대학교육협의회"));
+      setBoothNo(asString(p.booth_no));
+      setTarget(
+        asString(p.target, isVisit ? "3학년 학생 및 진학담당 교사" : "고등학생 및 학부모")
+      );
+      setAttendees(asString(p.attendees, isVisit ? "50" : "200"));
+      setSchedule(asString(p.schedule));
+      setLocation(asString(p.location));
+      setFormat(asString(p.format, "오프라인"));
+      setContactTeacher(asString(p.contact_teacher));
+      setStaffCount(asString(p.staff_count, "입학팀 3명"));
+      setDepartment(asString(p.department, "입학팀"));
+      setEquipment(asString(p.equipment, "노트북, 빔프로젝터, 마이크"));
+      setMaterials(asString(p.materials));
+      setConsultingFocus(asString(p.consulting_focus));
+      setNotes(asString(p.notes));
+      const programRows = parseProgramRows(p.programs, (idx) => `resume-${idx}`);
+      if (programRows.length) setPrograms(programRows);
+      setPdfUrl(null);
+      setPreviewUrl(null);
+      setStep(1);
+    },
+    setError,
+  );
 
   const applyStaffToProgram = (name: string) => {
     const targetId =
@@ -262,12 +199,7 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
   const saveToArchive = async () => {
     setSavingArchive(true);
     try {
-      if (archiveId != null) {
-        await apiClient.patch(`/api/archive/${archiveId}/status`, { status: "archived" });
-      }
-      navigate("/archive");
-    } catch {
-      navigate("/archive");
+      await archiveAndLeave(archiveId, navigate);
     } finally {
       setSavingArchive(false);
     }
@@ -334,21 +266,13 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
     setMaterials(asString(p.materials, materials));
     setConsultingFocus(asString(p.consulting_focus, consultingFocus));
     setNotes(asString(p.notes, notes));
-    const programRows: ProgramRow[] = Array.isArray(p.programs)
-      ? p.programs.flatMap((row, idx) => {
-          const rec = asRecord(row);
-          if (!rec) return [];
-          return [
-            {
-              id: programs[idx]?.id ?? `patched-${idx}`,
-              time: asString(rec.time),
-              content: asString(rec.content),
-              owner: asString(rec.owner),
-            },
-          ];
-        })
-      : [];
-    if (programRows.length) setPrograms(programRows);
+    setPrograms((prev) => {
+      const programRows = parseProgramRows(
+        p.programs,
+        (idx) => prev[idx]?.id ?? `patched-${idx}`,
+      );
+      return programRows.length ? programRows : prev;
+    });
   };
 
   const generatePlan = async (payload: ReturnType<typeof buildPayload>) => {
@@ -358,12 +282,17 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
       preview_url: string | null;
       title: string;
       archive_id?: number | null;
-    }>(apiPath, payload);
+    }>(apiPath, {
+      ...payload,
+      archive_status: "draft",
+    });
+    const nextArchiveId = data.archive_id ?? payload.archive_id ?? null;
     setPlanId(data.id);
-    setArchiveId(data.archive_id ?? null);
+    setArchiveId(nextArchiveId);
     setPdfUrl(data.pdf_url);
     setPreviewUrl(data.preview_url);
     await loadStaff();
+    return nextArchiveId;
   };
 
   const runRegulationReview = async (payload: ReturnType<typeof buildPayload>) => {
@@ -376,6 +305,7 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
       payload: reviewPayload,
     });
     setRegulationReview(data);
+    await applyArchiveReviewStatus(payload.archive_id ?? archiveId, data);
     if (!data.ok && data.findings.length > 0) {
       setPausedPhase("regulation");
       setLoadingLabel("");
@@ -416,8 +346,8 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
       setLoadingLabel("계획안을 생성하고 있습니다…");
       const apiPromise = generatePlan(payload);
       await sleep(1200);
-      await apiPromise;
-      await runContentReview(payload);
+      const nextArchiveId = await apiPromise;
+      await runContentReview({ ...payload, archive_id: nextArchiveId });
     } catch (e) {
       setStep(1);
       setPausedPhase(null);
@@ -439,7 +369,8 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
         setPausedPhase(null);
         setStep(2);
         setLoadingLabel("수정된 내용으로 문서를 다시 구성하고 있습니다…");
-        await generatePlan(payload);
+        const nextArchiveId = await generatePlan(payload);
+        payload = { ...payload, archive_id: nextArchiveId };
       }
       setContentReview(null);
       await runRegulationReview(payload);
@@ -532,66 +463,66 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
                   {isVisit ? "방문 기본 정보" : "박람회 기본 정보"}
                 </p>
                 <div className="mt-4 space-y-3">
-                  <Field label={isVisit ? "계획명" : "박람회명"}>
+                  <WizardField label={isVisit ? "계획명" : "박람회명"}>
                     <input
                       value={eventName}
                       onChange={(e) => setEventName(e.target.value)}
                       className="field-input"
                     />
-                  </Field>
+                  </WizardField>
                   {isVisit ? (
                     <>
-                      <Field label="방문 고교명">
+                      <WizardField label="방문 고교명">
                         <input
                           value={schoolName}
                           onChange={(e) => setSchoolName(e.target.value)}
                           className="field-input"
                           placeholder="예: ○○고등학교"
                         />
-                      </Field>
-                      <Field label="지역">
+                      </WizardField>
+                      <WizardField label="지역">
                         <input
                           value={region}
                           onChange={(e) => setRegion(e.target.value)}
                           className="field-input"
                         />
-                      </Field>
+                      </WizardField>
                     </>
                   ) : (
                     <>
-                      <Field label="주최·주관">
+                      <WizardField label="주최·주관">
                         <input
                           value={host}
                           onChange={(e) => setHost(e.target.value)}
                           className="field-input"
                         />
-                      </Field>
-                      <Field label="부스 번호">
+                      </WizardField>
+                      <WizardField label="부스 번호">
                         <input
                           value={boothNo}
                           onChange={(e) => setBoothNo(e.target.value)}
                           className="field-input"
                           placeholder="예: A-12"
                         />
-                      </Field>
+                      </WizardField>
                     </>
                   )}
-                  <Field label="대상">
+                  <WizardField label="대상">
                     <input
                       value={target}
                       onChange={(e) => setTarget(e.target.value)}
                       className="field-input"
                     />
-                  </Field>
-                  <Field label={isVisit ? "예상 참석 인원" : "예상 상담 인원"}>
+                  </WizardField>
+                  <WizardField label={isVisit ? "예상 참석 인원" : "예상 상담 인원"}>
                     <input
                       value={attendees}
                       onChange={(e) => setAttendees(e.target.value.replace(/[^\d]/g, ""))}
                       className="field-input"
                       inputMode="numeric"
                     />
-                  </Field>
-                  <Field label="일시">
+                  </WizardField>
+                  <WizardField label="일시">
                     <div className="relative">
                       <input
                         value={schedule}
@@ -600,17 +531,17 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
                       />
                       <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     </div>
-                  </Field>
-                  <Field label={isVisit ? "장소" : "개최 장소"}>
+                  </WizardField>
+                  <WizardField label={isVisit ? "장소" : "개최 장소"}>
                     <input
                       value={location}
                       onChange={(e) => setLocation(e.target.value)}
                       className="field-input"
                     />
-                  </Field>
+                  </WizardField>
                   {isVisit ? (
                     <>
-                      <Field label="진행 형태">
+                      <WizardField label="진행 형태">
                         <select
                           value={format}
                           onChange={(e) => setFormat(e.target.value)}
@@ -619,32 +550,32 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
                           <option value="오프라인">오프라인</option>
                           <option value="온라인">온라인</option>
                         </select>
-                      </Field>
-                      <Field label="고교 담당교사">
+                      </WizardField>
+                      <WizardField label="고교 담당교사">
                         <input
                           value={contactTeacher}
                           onChange={(e) => setContactTeacher(e.target.value)}
                           className="field-input"
                           placeholder="성명"
                         />
-                      </Field>
+                      </WizardField>
                     </>
                   ) : (
-                    <Field label="배치 인력">
+                    <WizardField label="배치 인력">
                       <input
                         value={staffCount}
                         onChange={(e) => setStaffCount(e.target.value)}
                         className="field-input"
                       />
-                    </Field>
+                    </WizardField>
                   )}
-                  <Field label="주관 부서">
+                  <WizardField label="주관 부서">
                     <input
                       value={department}
                       onChange={(e) => setDepartment(e.target.value)}
                       className="field-input"
                     />
-                  </Field>
+                  </WizardField>
                 </div>
               </section>
 
@@ -790,49 +721,49 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
               <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
                 {isVisit ? (
                   <>
-                    <Field label="필요 장비">
+                    <WizardField label="필요 장비">
                       <input
                         value={equipment}
                         onChange={(e) => setEquipment(e.target.value)}
                         className="field-input"
                         placeholder="노트북, 빔, 마이크 등"
                       />
-                    </Field>
-                    <Field label="홍보·배포 자료">
+                    </WizardField>
+                    <WizardField label="홍보·배포 자료">
                       <input
                         value={materials}
                         onChange={(e) => setMaterials(e.target.value)}
                         className="field-input"
                       />
-                    </Field>
+                    </WizardField>
                   </>
                 ) : (
                   <>
-                    <Field label="홍보물·준비물">
+                    <WizardField label="홍보물·준비물">
                       <input
                         value={materials}
                         onChange={(e) => setMaterials(e.target.value)}
                         className="field-input"
                       />
-                    </Field>
-                    <Field label="상담 중점 내용">
+                    </WizardField>
+                    <WizardField label="상담 중점 내용">
                       <input
                         value={consultingFocus}
                         onChange={(e) => setConsultingFocus(e.target.value)}
                         className="field-input"
                       />
-                    </Field>
+                    </WizardField>
                   </>
                 )}
                 <div className="md:col-span-2">
-                  <Field label={isVisit ? "요청·특이사항" : "기타사항"}>
+                  <WizardField label={isVisit ? "요청·특이사항" : "기타사항"}>
                     <textarea
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       className="field-input min-h-[72px] resize-y"
                       placeholder="일정 조율, 주차, 안전 등"
                     />
-                  </Field>
+                  </WizardField>
                 </div>
               </div>
             </section>
@@ -1026,164 +957,6 @@ export default function OutreachPlanWizard({ kind }: { kind: OutreachKind }) {
           box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
         }
       `}</style>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <span className="text-[12px] font-medium text-slate-600">{label}</span>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function OwnerInput({
-  value,
-  staffList,
-  active,
-  onActivate,
-  onChange,
-  onCommit,
-  onDeleteStaff,
-}: {
-  value: string;
-  staffList: StaffPerson[];
-  active: boolean;
-  onActivate: () => void;
-  onChange: (value: string) => void;
-  onCommit: (name: string) => void;
-  onDeleteStaff: (id: number) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 160 });
-
-  const filtered = staffList.filter((p) =>
-    value.trim() ? p.name.toLowerCase().includes(value.trim().toLowerCase()) : true
-  );
-
-  const updateMenuPos = () => {
-    const el = inputRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    setMenuPos({
-      top: rect.bottom + 4,
-      left: rect.left,
-      width: Math.max(rect.width, 160),
-    });
-  };
-
-  useEffect(() => {
-    if (!open) return;
-    updateMenuPos();
-    const onScroll = () => updateMenuPos();
-    window.addEventListener("resize", onScroll);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      window.removeEventListener("resize", onScroll);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [open, value, staffList.length]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (inputRef.current?.contains(target)) return;
-      const menu = document.getElementById("owner-suggest-menu-outreach");
-      if (menu?.contains(target)) return;
-      setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
-  }, [open]);
-
-  const showMenu = open && filtered.length > 0;
-
-  return (
-    <div className="relative">
-      <input
-        ref={inputRef}
-        value={value}
-        placeholder="이름 입력"
-        onFocus={() => {
-          onActivate();
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onClick={() => {
-          onActivate();
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onChange={(e) => {
-          onChange(e.target.value);
-          setOpen(true);
-          updateMenuPos();
-        }}
-        onBlur={() => {
-          window.setTimeout(() => {
-            if (value.trim()) onCommit(value);
-          }, 150);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            if (value.trim()) {
-              onCommit(value);
-              setOpen(false);
-            }
-          }
-          if (e.key === "Escape") setOpen(false);
-        }}
-        className={`field-input text-[12px] ${
-          active ? "border-[var(--ssu-blue)] ring-2 ring-blue-100" : ""
-        }`}
-      />
-      {showMenu &&
-        createPortal(
-          <ul
-            id="owner-suggest-menu-outreach"
-            className="fixed z-[1000] max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
-            style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width }}
-          >
-            {filtered.map((person) => (
-              <li
-                key={person.id}
-                className="flex items-center justify-between gap-2 px-2 py-1.5 hover:bg-slate-50"
-              >
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 truncate text-left text-[12px] text-slate-700"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onChange(person.name);
-                    onCommit(person.name);
-                    setOpen(false);
-                  }}
-                >
-                  {person.name}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`${person.name} 삭제`}
-                  className="rounded p-1 text-slate-400 hover:bg-red-50 hover:text-red-500"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onDeleteStaff(person.id);
-                  }}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              </li>
-            ))}
-          </ul>,
-          document.body
-        )}
     </div>
   );
 }
