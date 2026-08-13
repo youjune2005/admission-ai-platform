@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -30,6 +31,8 @@ def list_archive(
     date_to: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    sort_by: str = Query("updated_at", description="title|updated_at"),
+    sort_dir: str = Query("desc", description="asc|desc"),
     db: Session = Depends(get_db),
 ):
     def parse_dt(value: str | None) -> datetime | None:
@@ -51,6 +54,30 @@ def list_archive(
         date_to=parse_dt(date_to),
         page=page,
         page_size=page_size,
+        sort_by=sort_by if sort_by in ("title", "updated_at") else "updated_at",
+        sort_dir=sort_dir if sort_dir in ("asc", "desc") else "desc",
+    )
+
+
+@router.get("/{doc_id}/preview")
+def get_archive_preview(
+    doc_id: int,
+    size: str = Query("thumb", description="thumb|full"),
+    db: Session = Depends(get_db),
+):
+    doc = svc.get_document(db, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="문서를 찾을 수 없습니다.")
+    path = svc.preview_image_path(doc, full=size == "full")
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="미리보기 이미지가 없습니다.")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "Content-Disposition": "inline",
+        },
     )
 
 

@@ -6,6 +6,7 @@ import InquiryDraft from "./pages/InquiryDraft";
 import DocumentCreate from "./pages/DocumentCreate";
 import DocumentWizard from "./pages/DocumentWizard";
 import BudgetWizard from "./pages/BudgetWizard";
+import OutreachPlanWizard from "./pages/OutreachPlanWizard";
 import Archive from "./pages/Archive";
 import Regulations from "./pages/Regulations";
 import SettingsPage from "./pages/SettingsPage";
@@ -21,6 +22,14 @@ function App() {
           <Route path="documents/create" element={<DocumentCreate />} />
           <Route path="documents/create/wizard" element={<DocumentWizard />} />
           <Route path="documents/create/budget" element={<BudgetWizard />} />
+          <Route
+            path="documents/create/visit"
+            element={<OutreachPlanWizard kind="visit" />}
+          />
+          <Route
+            path="documents/create/fair"
+            element={<OutreachPlanWizard kind="fair" />}
+          />
           <Route path="archive" element={<Archive />} />
           <Route path="regulations" element={<Regulations />} />
           <Route path="settings" element={<SettingsPage />} />

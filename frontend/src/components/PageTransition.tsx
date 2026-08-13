@@ -4,7 +4,7 @@ import { useLocation, Outlet } from "react-router-dom";
 export default function PageTransition() {
   const location = useLocation();
   return (
-    <div key={location.pathname} className="page-enter h-full min-h-0">
+    <div key={location.pathname} className="page-enter h-full min-h-0 phone:h-auto phone:min-h-full">
       <Outlet />
     </div>
   );

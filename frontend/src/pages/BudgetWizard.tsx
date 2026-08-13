@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -14,7 +14,17 @@ import {
 import { API_BASE_URL, apiClient } from "../api/client";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
+import ContentReviewPanel from "../components/ContentReviewPanel";
+import RegulationReviewPanel from "../components/RegulationReviewPanel";
 import { BUDGET_FLOW_STEPS, flowStepFromWizard } from "../constants/documentFlow";
+import { asNumber, asRecord, asString } from "../lib/archiveWizard";
+import { applyReviewPatches } from "../lib/reviewPatches";
+import type {
+  ContentReviewPatch,
+  ContentReviewResult,
+  GeneratedDocument,
+  RegulationReviewResult,
+} from "../types";
 
 type WizardStep = 1 | 2 | 3 | 4 | 5;
 
@@ -75,10 +85,6 @@ const DEFAULT_ROWS: BudgetRow[] = [
   },
 ];
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function won(n: number) {
   return `${Number(n || 0).toLocaleString("ko-KR")}원`;
 }
@@ -91,6 +97,8 @@ function statusClass(status: string) {
 
 export default function BudgetWizard() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const archiveIdParam = params.get("archiveId");
   const [step, setStep] = useState<WizardStep>(1);
   const [title, setTitle] = useState("2027학년도 수시 입시설명회 예상 예산안");
   const [allocated, setAllocated] = useState(1500000);
@@ -103,12 +111,64 @@ export default function BudgetWizard() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
+  const [hydrating, setHydrating] = useState(!!archiveIdParam);
+  const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
+  const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
+  const [regulationReview, setRegulationReview] = useState<RegulationReviewResult | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const total = useMemo(
     () => rows.reduce((sum, r) => sum + r.unit_price * r.quantity, 0),
     [rows]
   );
   const remaining = allocated - total;
+
+  useEffect(() => {
+    if (!archiveIdParam) return;
+    const id = Number(archiveIdParam);
+    if (!Number.isFinite(id) || id <= 0) {
+      setHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await apiClient.get<GeneratedDocument>(`/api/archive/${id}`);
+        if (cancelled) return;
+        const p = asRecord(data.payload) ?? {};
+        setArchiveId(data.id);
+        setTitle(asString(p.title, data.title || "2027학년도 수시 입시설명회 예상 예산안"));
+        setAllocated(asNumber(p.allocated_budget, 1500000));
+        const itemRows: BudgetRow[] = Array.isArray(p.items)
+          ? p.items.flatMap((row, idx) => {
+              const rec = asRecord(row);
+              if (!rec) return [];
+              return [
+                {
+                  id: `resume-${idx}`,
+                  name: asString(rec.name),
+                  basis: asString(rec.basis),
+                  unit_price: asNumber(rec.unit_price),
+                  quantity: asNumber(rec.quantity, 1),
+                  status: asString(rec.status) || undefined,
+                },
+              ];
+            })
+          : [];
+        if (itemRows.length) setRows(itemRows);
+        setPdfUrl(null);
+        setPreviewUrl(null);
+        setStep(1);
+      } catch {
+        setError("작성 중이던 문서를 불러오지 못했습니다.");
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [archiveIdParam]);
 
   const updateRow = (id: string, patch: Partial<BudgetRow>) => {
     setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
@@ -141,43 +201,133 @@ export default function BudgetWizard() {
       status: r.status,
     }));
 
+  const buildBudgetPayload = () => ({
+    title,
+    allocated_budget: allocated,
+    items: payloadItems(),
+  });
+
+  const applyBudgetPayload = (p: Record<string, unknown>) => {
+    setTitle(asString(p.title, title));
+    if (p.allocated_budget != null) setAllocated(asNumber(p.allocated_budget, allocated));
+    const itemRows: BudgetRow[] = Array.isArray(p.items)
+      ? p.items.flatMap((row, idx) => {
+          const rec = asRecord(row);
+          if (!rec) return [];
+          return [
+            {
+              id: rows[idx]?.id ?? `patched-${idx}`,
+              name: asString(rec.name),
+              basis: asString(rec.basis),
+              unit_price: asNumber(rec.unit_price),
+              quantity: asNumber(rec.quantity, 1),
+              status: asString(rec.status) || undefined,
+            },
+          ];
+        })
+      : [];
+    if (itemRows.length) setRows(itemRows);
+  };
+
+  const goToBudgetEdit = async (payload: ReturnType<typeof buildBudgetPayload>) => {
+    const { data } = await apiClient.post<ReviewResult>("/api/budget/review", payload);
+    setReview(data);
+    setRows(
+      data.items.map((item, idx) => ({
+        id: rows[idx]?.id ?? `${idx}`,
+        name: item.name,
+        basis: item.basis,
+        unit_price: item.unit_price,
+        quantity: item.quantity,
+        status: item.status,
+      }))
+    );
+    setPausedPhase(null);
+    setStep(4);
+    setLoadingLabel("");
+  };
+
+  const runRegulationReview = async (payload: ReturnType<typeof buildBudgetPayload>) => {
+    setPausedPhase(null);
+    setStep(3);
+    setLoadingLabel("규정·자료 관리 DB와 비교하여 규정 상태를 확인합니다…");
+    const { data } = await apiClient.post<RegulationReviewResult>("/api/plans/review/regulations", {
+      kind: "budget",
+      payload,
+    });
+    setRegulationReview(data);
+    if (!data.ok && data.findings.length > 0) {
+      setPausedPhase("regulation");
+      setLoadingLabel("");
+      return;
+    }
+    await goToBudgetEdit(payload);
+  };
+
+  const runContentReview = async (payload: ReturnType<typeof buildBudgetPayload>) => {
+    setPausedPhase(null);
+    setStep(2);
+    setLoadingLabel("문서 안의 수량·산출 근거 모순을 확인하고 있습니다…");
+    const { data } = await apiClient.post<ContentReviewResult>("/api/plans/review/consistency", {
+      kind: "budget",
+      payload,
+    });
+    setContentReview(data);
+    if (!data.ok && data.issues.length > 0) {
+      setPausedPhase("content");
+      setLoadingLabel("");
+      return;
+    }
+    await runRegulationReview(payload);
+  };
+
   const startReviewFlow = async () => {
     setError(null);
+    setPausedPhase(null);
+    setContentReview(null);
+    setRegulationReview(null);
     if (!rows.some((r) => r.name.trim())) {
       setError("예산 항목을 1개 이상 입력해주세요.");
       return;
     }
 
     try {
-      setStep(2);
-      setLoadingLabel("행정 요건과 입력값을 검토하고 있습니다…");
-      await sleep(1100);
-
-      setStep(3);
-      setLoadingLabel("규정·자료 관리 DB와 비교하여 규정 상태를 확인합니다…");
-      const { data } = await apiClient.post<ReviewResult>("/api/budget/review", {
-        title,
-        allocated_budget: allocated,
-        items: payloadItems(),
-      });
-      setReview(data);
-      setRows(
-        data.items.map((item, idx) => ({
-          id: rows[idx]?.id ?? `${idx}`,
-          name: item.name,
-          basis: item.basis,
-          unit_price: item.unit_price,
-          quantity: item.quantity,
-          status: item.status,
-        }))
-      );
-      await sleep(900);
-      setStep(4);
-      setLoadingLabel("");
+      await runContentReview(buildBudgetPayload());
     } catch (e) {
       setStep(1);
+      setPausedPhase(null);
       setLoadingLabel("");
       setError(e instanceof Error ? e.message : "규정 검토에 실패했습니다.");
+    }
+  };
+
+  const continueContentReview = async (patches: ContentReviewPatch[]) => {
+    setReviewBusy(true);
+    setError(null);
+    try {
+      let payload = buildBudgetPayload();
+      if (patches.length) {
+        payload = applyReviewPatches(payload, patches);
+        applyBudgetPayload(payload);
+      }
+      setContentReview(null);
+      await runRegulationReview(payload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "수정 반영에 실패했습니다.");
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const skipContentReview = async () => {
+    setReviewBusy(true);
+    try {
+      setContentReview(null);
+      await runRegulationReview(buildBudgetPayload());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "규정 검토에 실패했습니다.");
+    } finally {
+      setReviewBusy(false);
     }
   };
 
@@ -233,6 +383,7 @@ export default function BudgetWizard() {
         title,
         allocated_budget: allocated,
         items: payloadItems(),
+        archive_id: archiveId,
       });
       setPlanId(data.id);
       setArchiveId(data.archive_id ?? null);
@@ -258,8 +409,16 @@ export default function BudgetWizard() {
     }
   };
 
+  if (hydrating) {
+    return (
+      <div className="mx-auto max-w-[1180px] px-6 py-16 text-center text-[14px] text-slate-500">
+        작성 중이던 문서를 불러오는 중…
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto max-w-[1180px] px-6 py-6">
+    <div className="mx-auto max-w-[1180px] px-6 py-6 phone:px-4 phone:py-4">
       {step === 5 ? (
         <div className="mb-4 flex items-center gap-3">
           <button
@@ -440,7 +599,7 @@ export default function BudgetWizard() {
             </div>
           </section>
 
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="mt-5 flex justify-end gap-2 phone:flex-col-reverse">
             <button
               type="button"
               onClick={() => navigate("/documents/create")}
@@ -453,21 +612,46 @@ export default function BudgetWizard() {
               onClick={startReviewFlow}
               className="rounded-lg bg-[var(--ssu-blue)] px-5 py-2.5 text-[13px] font-semibold text-white"
             >
-              다음 (행정·규정 검토)
+              다음 (내용·규정 검토)
             </button>
           </div>
         </>
       )}
 
-      {(step === 2 || step === 3) && (
+      {step === 2 && pausedPhase === "content" && contentReview && (
+        <ContentReviewPanel
+          result={contentReview}
+          busy={reviewBusy}
+          onApply={(patches) => void continueContentReview(patches)}
+          onSkip={() => void skipContentReview()}
+        />
+      )}
+
+      {step === 3 && pausedPhase === "regulation" && regulationReview && (
+        <RegulationReviewPanel
+          result={regulationReview}
+          busy={reviewBusy}
+          onBack={() => {
+            setPausedPhase(null);
+            setStep(1);
+          }}
+          onContinue={() => {
+            void goToBudgetEdit(buildBudgetPayload()).catch((e: unknown) => {
+              setError(e instanceof Error ? e.message : "검토 결과 반영에 실패했습니다.");
+            });
+          }}
+        />
+      )}
+
+      {((step === 2 && pausedPhase !== "content") || (step === 3 && pausedPhase !== "regulation")) && (
         <section className="mt-10 flex min-h-[360px] flex-col items-center justify-center rounded-xl border border-[var(--ssu-border)] bg-white px-6 py-16 text-center shadow-sm">
           <LoaderCircle className="h-10 w-10 animate-spin text-[var(--ssu-blue)]" />
           <p className="mt-5 text-[16px] font-bold text-slate-900">
-            {step === 2 ? "행정 검토 중" : "규정 검토 중"}
+            {step === 2 ? "내용 점검 중" : "규정 검토 중"}
           </p>
           <p className="mt-2 max-w-md text-[13px] text-slate-500">{loadingLabel}</p>
           <div className="mt-6 flex gap-2">
-            {["행정 검토", "규정 검토"].map((label, idx) => {
+            {["내용 점검", "규정 검토"].map((label, idx) => {
               const n = (idx + 2) as WizardStep;
               return (
                 <span
@@ -613,6 +797,24 @@ export default function BudgetWizard() {
                     <p className="mt-1 leading-relaxed">
                       확인 필요한 항목이 있습니다. 담당자 검토 후 진행해 주세요.
                     </p>
+                  </div>
+                )}
+
+                {regulationReview && regulationReview.findings.length > 0 && (
+                  <div className="mt-4 space-y-2 border-t border-slate-100 pt-3">
+                    <p className="text-[12px] font-semibold text-slate-700">규정 RAG 대조</p>
+                    {regulationReview.findings.slice(0, 3).map((finding, idx) => (
+                      <div key={`${finding.location}-${idx}`} className="rounded-lg bg-slate-50 px-2.5 py-2">
+                        <p className="text-[11px] font-semibold text-slate-800">
+                          {finding.mismatch_note || finding.problem}
+                        </p>
+                        {finding.regulation_excerpt && (
+                          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+                            「{finding.regulation_excerpt}」
+                          </p>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>

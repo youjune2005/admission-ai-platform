@@ -173,3 +173,69 @@ export interface IngestResult {
   skipped: string[];
   failed: string[];
 }
+
+export type PlanReviewKind = "briefing" | "visit" | "fair" | "budget";
+
+export interface ContentReviewPatch {
+  path: string;
+  value: string | number | boolean | null;
+}
+
+export interface ContentReviewOption {
+  id: string;
+  label: string;
+  before: string;
+  after: string;
+  patches: ContentReviewPatch[];
+}
+
+export interface ContentReviewIssue {
+  id: string;
+  severity: "error" | "warn";
+  location: string;
+  field: string;
+  problem: string;
+  guideline: string;
+  before?: string;
+  after?: string;
+  patch?: ContentReviewPatch | null;
+  options: ContentReviewOption[];
+}
+
+export interface ContentReviewResult {
+  kind: PlanReviewKind;
+  ok: boolean;
+  issues: ContentReviewIssue[];
+  summary: { total: number; errors: number; warnings: number };
+}
+
+export interface RegulationFinding {
+  status: "violation" | "check";
+  location: string;
+  problem: string;
+  document_excerpt?: string;
+  regulation_title: string;
+  citation_n: number | null;
+  regulation_excerpt: string;
+  mismatch_note?: string;
+  explanation: string;
+}
+
+export interface RegulationReference {
+  document_id: number;
+  filename: string;
+  relevance: number;
+  score: number;
+  snippet: string;
+  mismatch_excerpt?: string;
+  verdict?: "violation" | "check" | null;
+  updated_at?: string | null;
+}
+
+export interface RegulationReviewResult {
+  kind: PlanReviewKind;
+  ok: boolean;
+  findings: RegulationFinding[];
+  references: RegulationReference[];
+  summary: { violations: number; needs_check: number; reference_count: number };
+}

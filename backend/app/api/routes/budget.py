@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import BriefingPlan
+from app.db.models import BriefingPlan, GeneratedDocument
 from app.services.archive_service import upsert_generated_document
 from app.services.budget_plan_service import generate_budget_statement_pdf, review_budget
 
@@ -33,6 +33,7 @@ class BudgetFinalizeRequest(BaseModel):
     title: str = "예상 예산안"
     allocated_budget: int = 0
     items: list[BudgetItemIn] = Field(default_factory=list)
+    archive_id: int | None = None
 
 
 def _normalize_items(items: list[BudgetItemIn]) -> list[dict]:
@@ -77,6 +78,11 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
         raise HTTPException(status_code=422, detail="예산 항목을 1개 이상 입력해주세요.")
 
     # 저장 레코드 (BriefingPlan 테이블 재사용: type을 payload에 기록)
+    if payload.archive_id is not None:
+        existing = db.get(GeneratedDocument, payload.archive_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="이어서 작성할 문서를 찾을 수 없습니다.")
+
     record_payload = {
         "type": "budget",
         "title": payload.title,
@@ -122,6 +128,7 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
         academic_year="2027",
         author="입학팀 담당자",
         status="approved",
+        existing_id=payload.archive_id,
     )
 
     review = review_budget(db, items, int(payload.allocated_budget or 0))

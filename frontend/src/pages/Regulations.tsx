@@ -13,19 +13,10 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { apiClient } from "../api/client";
+import { formatKstDate } from "../lib/datetime";
 import type { DocumentListResponse, IngestResult, UploadedDocument } from "../types";
 
 const tabs = ["모집요강", "입학처 공지", "FAQ", "예산·행정 규정", "문서 양식"] as const;
-
-function formatDate(value?: string | null) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value.slice(0, 10);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 /** 숫자만 받아 YYYY-MM-DD 형태로 포맷 */
 function formatDateTyping(raw: string) {
@@ -70,7 +61,14 @@ export default function Regulations() {
   };
 
   useEffect(() => {
-    loadDocs().catch(() => {});
+    setLoading(true);
+    setError(null);
+    loadDocs()
+      .catch((err: unknown) => {
+        setData(null);
+        setError(err instanceof Error ? err.message : "자료 목록을 불러오지 못했습니다.");
+      })
+      .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, page, pageSize]);
 
@@ -172,11 +170,11 @@ export default function Regulations() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-[1400px] gap-4 px-6 py-6">
+    <div className="mx-auto flex h-full max-w-[1400px] gap-4 px-6 py-6 phone:h-auto phone:flex-col phone:px-4 phone:py-4">
       <div className="min-w-0 flex-1">
-        <div className="mb-5 flex items-start justify-between gap-3">
+        <div className="mb-5 flex items-start justify-between gap-3 phone:flex-col">
           <div>
-            <h1 className="text-[24px] font-bold text-slate-900">규정·자료 관리</h1>
+            <h1 className="text-[24px] font-bold text-slate-900 phone:text-[20px]">규정·자료 관리</h1>
             <p className="mt-1 text-[13px] text-slate-500">
               모집요강·FAQ·행정 규정을 등록하고 AI가 참고할 수 있도록 인덱싱합니다.
             </p>
@@ -185,7 +183,7 @@ export default function Regulations() {
             type="button"
             onClick={syncDataFolder}
             disabled={syncing}
-            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-navy)] px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
+            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-navy)] px-3 py-2 text-[13px] font-semibold text-white disabled:opacity-50 phone:w-full phone:justify-center"
           >
             {syncing ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FolderSync className="h-4 w-4" />}
             data/ 폴더 동기화
@@ -212,7 +210,7 @@ export default function Regulations() {
           })}
         </div>
 
-        <div className="mb-3 flex gap-4 border-b border-slate-200 text-[13px]">
+        <div className="mb-3 flex gap-4 overflow-x-auto border-b border-slate-200 text-[13px]">
           {tabs.map((tab) => (
             <button
               key={tab}
@@ -221,7 +219,7 @@ export default function Regulations() {
                 setActiveTab(tab);
                 setPage(1);
               }}
-              className={`ui-pressable pb-2 font-semibold ${
+              className={`ui-pressable shrink-0 pb-2 font-semibold ${
                 activeTab === tab
                   ? "border-b-2 border-[var(--ssu-blue)] text-[var(--ssu-blue)]"
                   : "text-slate-500"
@@ -242,7 +240,8 @@ export default function Regulations() {
         {error && <p className="mb-3 text-[13px] text-red-500">{error}</p>}
 
         <div className="ui-surface overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white">
-          <table className="w-full text-left text-[13px]">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-[13px] phone:min-w-[480px]">
             <thead className="bg-slate-50 text-[12px] text-slate-500">
               <tr>
                 <th className="px-4 py-3 font-medium">자료명</th>
@@ -258,7 +257,7 @@ export default function Regulations() {
                   <td className="px-4 py-3.5 font-semibold text-slate-800">{doc.filename}</td>
                   <td className="px-4 py-3.5 text-slate-600">{doc.version}</td>
                   <td className="px-4 py-3.5 text-slate-600">
-                    {formatDate(doc.updated_at ?? doc.created_at)}
+                    {formatKstDate(doc.updated_at ?? doc.created_at)}
                   </td>
                   <td className="px-4 py-3.5">
                     <span
@@ -287,6 +286,7 @@ export default function Regulations() {
               )}
             </tbody>
           </table>
+          </div>
 
           <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 text-[12px] text-slate-500">
             <span>전체 {data?.total ?? 0}건</span>
@@ -327,7 +327,7 @@ export default function Regulations() {
         </div>
       </div>
 
-      <aside className="ui-surface w-[320px] shrink-0 self-start rounded-xl border border-[var(--ssu-border)] bg-white p-4">
+      <aside className="ui-surface w-[320px] shrink-0 self-start rounded-xl border border-[var(--ssu-border)] bg-white p-4 phone:w-full">
         <p className="text-[14px] font-bold text-slate-900">자료 업로드</p>
         <div
           onClick={() => fileInputRef.current?.click()}

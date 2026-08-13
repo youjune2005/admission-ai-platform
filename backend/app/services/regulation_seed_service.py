@@ -8,6 +8,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.timeutil import now_kst
 from app.db.models import UploadedDocument
 from app.services.document_service import extract_text, summarize_document
 from app.services.rag_service import ingest_document
@@ -70,7 +71,7 @@ def _mtime_dt(path: Path) -> datetime:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime)
     except OSError:
-        return datetime.utcnow()
+        return now_kst()
 
 
 def seed_guideline_documents(db: Session) -> dict[str, int]:

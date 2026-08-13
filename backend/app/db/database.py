@@ -34,6 +34,68 @@ def _sqlite_add_column_if_missing(table: str, column: str, ddl: str) -> None:
             conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {ddl}"))
 
 
+def _migrate_utc_timestamps_to_kst() -> None:
+    """기존 UTC naive 시각을 KST(+9h)로 한 번만 보정합니다."""
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    shifts: list[tuple[str, tuple[str, ...]]] = [
+        ("chat_sessions", ("created_at",)),
+        ("chat_messages", ("created_at",)),
+        ("workflow_tasks", ("created_at",)),
+        ("uploaded_documents", ("created_at", "updated_at")),
+        ("inquiries", ("created_at", "updated_at")),
+        ("inquiry_activities", ("created_at",)),
+        ("kpi_daily_snapshots", ("created_at", "updated_at")),
+        ("briefing_plans", ("created_at", "updated_at")),
+        ("staff_people", ("created_at",)),
+        ("generated_documents", ("created_at", "updated_at", "approved_at", "archived_at")),
+    ]
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS app_meta ("
+                "key VARCHAR(64) PRIMARY KEY, value TEXT)"
+            )
+        )
+        row = conn.execute(
+            text("SELECT value FROM app_meta WHERE key = 'timestamps_tz'")
+        ).fetchone()
+        if row and row[0] == "kst":
+            return
+
+        tables = {
+            r[0]
+            for r in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        for table, columns in shifts:
+            if table not in tables:
+                continue
+            existing = {
+                r[1]
+                for r in conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            }
+            for col in columns:
+                if col not in existing:
+                    continue
+                conn.execute(
+                    text(
+                        f"UPDATE {table} SET {col} = datetime({col}, '+9 hours') "
+                        f"WHERE {col} IS NOT NULL"
+                    )
+                )
+
+        conn.execute(
+            text(
+                "INSERT INTO app_meta(key, value) VALUES ('timestamps_tz', 'kst') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+        )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401  (ensure models are registered)
 
@@ -57,12 +119,24 @@ def init_db() -> None:
                     "WHERE ai_draft_answer IS NULL AND draft_answer IS NOT NULL"
                 )
             )
+        _migrate_utc_timestamps_to_kst()
 
     # data/guidelines 시드
+    from app.services.archive_service import dedupe_generated_documents
     from app.services.regulation_seed_service import seed_guideline_documents
 
     db = SessionLocal()
     try:
         seed_guideline_documents(db)
+        dedupe_generated_documents(db)
     finally:
         db.close()
+
+    if settings.database_url.startswith("sqlite"):
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_generated_documents_source_id "
+                    "ON generated_documents(source_id) WHERE source_id IS NOT NULL"
+                )
+            )

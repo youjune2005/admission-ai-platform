@@ -2,33 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
 import { apiClient } from "../api/client";
+import { formatKstDate, formatKstDateTime } from "../lib/datetime";
 import type { Inquiry, InquiryListResponse, InquiryReferenceDoc } from "../types";
 
 const YEARS = ["2027", "2026"];
 const ADMISSION_TYPES = ["수시모집", "정시모집"];
 const SELECTION_TYPES = ["", "학생부종합", "학생부교과", "논술우수자", "실기/실적"];
-
-function formatDateTime(value?: string | null) {
-  if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "-";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${y}.${m}.${day} ${hh}:${mm}`;
-}
-
-function formatShortDate(value?: string | null) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}.${m}.${day}`;
-}
 
 function statusBadge(status: string) {
   if (status === "generating") {
@@ -55,27 +34,45 @@ export default function InquiryPage() {
   const pageSize = 5;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [refsError, setRefsError] = useState<string | null>(null);
 
   const loadHistory = async (p = page) => {
-    const res = await apiClient.get<InquiryListResponse>("/api/inquiry", {
-      params: { page: p, page_size: pageSize },
-    });
-    setHistory(res.data.items);
-    setTotal(res.data.total);
+    try {
+      const res = await apiClient.get<InquiryListResponse>("/api/inquiry", {
+        params: { page: p, page_size: pageSize },
+      });
+      setHistory(res.data.items);
+      setTotal(res.data.total);
+      setHistoryError(null);
+    } catch (err: any) {
+      setHistory([]);
+      setTotal(0);
+      setHistoryError(
+        err?.response?.data?.detail ?? "최근 문의 내역을 불러오지 못했습니다."
+      );
+    }
   };
 
   const loadRefs = async () => {
-    const res = await apiClient.get<InquiryReferenceDoc[]>("/api/inquiry/references");
-    setRefs(res.data);
-    setSelectedIds(res.data.map((d) => d.id));
+    try {
+      const res = await apiClient.get<InquiryReferenceDoc[]>("/api/inquiry/references");
+      setRefs(res.data);
+      setSelectedIds(res.data.map((d) => d.id));
+      setRefsError(null);
+    } catch (err: any) {
+      setRefs([]);
+      setSelectedIds([]);
+      setRefsError(err?.response?.data?.detail ?? "규정·자료를 불러오지 못했습니다.");
+    }
   };
 
   useEffect(() => {
-    loadRefs().catch(() => {});
+    void loadRefs();
   }, []);
 
   useEffect(() => {
-    loadHistory(page).catch(() => {});
+    void loadHistory(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
@@ -115,9 +112,9 @@ export default function InquiryPage() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-[1400px] flex-col gap-4 overflow-y-auto px-6 py-6">
+    <div className="mx-auto flex h-full max-w-[1400px] flex-col gap-4 overflow-y-auto px-6 py-6 phone:h-auto phone:px-4 phone:py-4">
       <div>
-        <h1 className="text-[24px] font-bold text-slate-900">입시 문의 답변</h1>
+        <h1 className="text-[24px] font-bold text-slate-900 phone:text-[20px]">입시 문의 답변</h1>
         <p className="mt-1 text-[13px] text-slate-500">
           모집요강·FAQ 근거를 바탕으로 정확한 답변 초안을 생성합니다.
         </p>
@@ -128,7 +125,7 @@ export default function InquiryPage() {
         <section className="ui-surface rounded-xl border border-[var(--ssu-border)] bg-white p-5">
           <p className="text-[15px] font-bold text-slate-900">문의 내용 입력</p>
 
-          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3 phone:grid-cols-1!">
             <select
               value={year}
               onChange={(e) => setYear(e.target.value)}
@@ -240,7 +237,7 @@ export default function InquiryPage() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[12px] font-medium text-slate-800">{doc.filename}</p>
                   <p className="mt-0.5 text-[11px] text-slate-400">
-                    {formatShortDate(doc.updated_at ?? doc.created_at)}
+                    {formatKstDate(doc.updated_at ?? doc.created_at, "", ".")}
                     {doc.category ? ` · ${doc.category}` : ""}
                   </p>
                 </div>
@@ -248,7 +245,20 @@ export default function InquiryPage() {
             ))}
             {displayRefs.length === 0 && (
               <li className="rounded-lg bg-slate-50 px-3 py-4 text-center text-[12px] text-slate-400">
-                등록된 규정·자료가 없습니다.
+                {refsError ? (
+                  <span className="flex flex-col items-center gap-2">
+                    <span className="text-red-600">{refsError}</span>
+                    <button
+                      type="button"
+                      onClick={() => void loadRefs()}
+                      className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      다시 시도
+                    </button>
+                  </span>
+                ) : (
+                  "등록된 규정·자료가 없습니다."
+                )}
               </li>
             )}
           </ul>
@@ -263,7 +273,56 @@ export default function InquiryPage() {
         <div className="border-b border-slate-100 px-5 py-4">
           <p className="text-[15px] font-bold text-slate-900">최근 문의 내역</p>
         </div>
-        <div className="overflow-x-auto">
+        <div className="hidden phone:block">
+          {history.length === 0 ? (
+            <div className="px-4 py-10 text-center text-[13px] text-slate-400">
+              {historyError ? (
+                <span className="inline-flex flex-col items-center gap-3">
+                  <span className="text-red-600">{historyError}</span>
+                  <button
+                    type="button"
+                    onClick={() => void loadHistory(page)}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700"
+                  >
+                    다시 시도
+                  </button>
+                </span>
+              ) : (
+                "최근 문의 내역이 없습니다. 위에서 문의를 입력해 보세요."
+              )}
+            </div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {history.map((item) => (
+                <li key={item.id} className="px-4 py-3.5">
+                  <p className="text-[13px] font-semibold leading-snug text-slate-800">
+                    {item.content}
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                    <span>{item.selection_type || "-"}</span>
+                    <span>·</span>
+                    <span>{item.asker_type}</span>
+                    <span>·</span>
+                    <span>{formatKstDateTime(item.created_at)}</span>
+                    <span
+                      className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusBadge(item.status)}`}
+                    >
+                      {item.status_label}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/inquiry/${item.id}`)}
+                    className="mt-2 rounded-lg border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-slate-700"
+                  >
+                    조회
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className="overflow-x-auto phone:hidden">
           <table className="w-full min-w-[900px] text-left text-[13px]">
             <thead className="bg-slate-50 text-[12px] text-slate-500">
               <tr>
@@ -287,7 +346,7 @@ export default function InquiryPage() {
                   </td>
                   <td className="px-4 py-3.5 text-slate-600">{item.selection_type || "-"}</td>
                   <td className="px-4 py-3.5 text-slate-600">{item.asker_type}</td>
-                  <td className="px-4 py-3.5 text-slate-600">{formatDateTime(item.created_at)}</td>
+                  <td className="px-4 py-3.5 text-slate-600">{formatKstDateTime(item.created_at)}</td>
                   <td className="px-4 py-3.5">
                     <span
                       className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${statusBadge(item.status)}`}
@@ -309,7 +368,20 @@ export default function InquiryPage() {
               {history.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
-                    최근 문의 내역이 없습니다. 위에서 문의를 입력해 보세요.
+                    {historyError ? (
+                      <span className="inline-flex flex-col items-center gap-3">
+                        <span className="text-red-600">{historyError}</span>
+                        <button
+                          type="button"
+                          onClick={() => void loadHistory(page)}
+                          className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          다시 시도
+                        </button>
+                      </span>
+                    ) : (
+                      "최근 문의 내역이 없습니다. 위에서 문의를 입력해 보세요."
+                    )}
                   </td>
                 </tr>
               )}

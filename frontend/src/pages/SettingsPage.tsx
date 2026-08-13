@@ -1,7 +1,7 @@
 export default function SettingsPage() {
   return (
-    <div className="mx-auto max-w-[800px] px-6 py-6">
-      <h1 className="text-[24px] font-bold text-slate-900">설정</h1>
+    <div className="mx-auto max-w-[800px] px-6 py-6 phone:px-4 phone:py-4">
+      <h1 className="text-[24px] font-bold text-slate-900 phone:text-[20px]">설정</h1>
       <p className="mt-1 text-[13px] text-slate-500">
         계정·알림·시스템 설정은 이후 단계에서 연결됩니다.
       </p>

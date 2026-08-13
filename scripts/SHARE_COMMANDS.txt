@@ -8,9 +8,14 @@ cd /Users/youjune/CursorProjects/admission-ai-platform/backend
 cd /Users/youjune/CursorProjects/admission-ai-platform/frontend
 npm run dev:share
 
-## 터미널 3 — 공개 URL
+## 터미널 3 — 공개 URL (+ 단축 링크)
 cd /Users/youjune/CursorProjects/admission-ai-platform
 ./scripts/share.sh
+# 또는 한 번에: ./scripts/open-share.sh
+# 출력 예:
+#   ✅ 공유 주소: https://xxxx.trycloudflare.com
+#   ✅ 단축 링크: https://zip1.io/xxxx
+# (단축: zip1.io — 중간 페이지 없이 바로 이동)
 
 # 안 될 때 흔한 원인
 # 1) 세 명령을 한 터미널에 한꺼번에 붙임 → 백엔드가 포그라운드라 다음 줄이 안 실행됨

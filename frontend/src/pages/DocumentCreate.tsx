@@ -13,7 +13,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
-import { BRIEFING_FLOW_STEPS, BUDGET_FLOW_STEPS } from "../constants/documentFlow";
+import { BRIEFING_FLOW_STEPS, BUDGET_FLOW_STEPS, OUTREACH_FLOW_STEPS } from "../constants/documentFlow";
 
 type Template = {
   id: string;
@@ -36,14 +36,14 @@ const templates: Template[] = [
     title: "고교 방문 홍보계획서",
     desc: "방문 일정과 홍보 프로그램, 담당자 배정을 정리합니다.",
     icon: School,
-    ready: false,
+    ready: true,
   },
   {
     id: "fair",
     title: "박람회 참가계획서",
     desc: "부스 운영·인력·홍보물 계획을 문서화합니다.",
     icon: Tent,
-    ready: false,
+    ready: true,
   },
   {
     id: "interview",
@@ -93,7 +93,11 @@ export default function DocumentCreate() {
   );
 
   const flowSteps =
-    selected === "budget" ? BUDGET_FLOW_STEPS : BRIEFING_FLOW_STEPS;
+    selected === "budget"
+      ? BUDGET_FLOW_STEPS
+      : selected === "visit" || selected === "fair"
+        ? OUTREACH_FLOW_STEPS
+        : BRIEFING_FLOW_STEPS;
 
   const goNext = async () => {
     if (!selectedTemplate.ready) {
@@ -110,6 +114,14 @@ export default function DocumentCreate() {
       navigate("/documents/create/budget", { state: { fromSelect: true } });
       return;
     }
+    if (selected === "visit") {
+      navigate("/documents/create/visit", { state: { fromSelect: true } });
+      return;
+    }
+    if (selected === "fair") {
+      navigate("/documents/create/fair", { state: { fromSelect: true } });
+      return;
+    }
     navigate(
       `/documents/create/wizard?template=${encodeURIComponent(selectedTemplate.title)}`,
       { state: { fromSelect: true } }
@@ -117,8 +129,8 @@ export default function DocumentCreate() {
   };
 
   return (
-    <div className={`mx-auto max-w-[1280px] px-6 py-6`}>
-      <h1 className="text-[24px] font-bold text-slate-900">행정문서 작성</h1>
+    <div className={`mx-auto max-w-[1280px] px-6 py-6 phone:px-4 phone:py-4`}>
+      <h1 className="text-[24px] font-bold text-slate-900 phone:text-[20px]">행정문서 작성</h1>
       <p className="mt-1 text-[13px] text-slate-500">작성할 문서의 양식을 선택해주세요.</p>
 
       <WizardStepper steps={flowSteps} current={flowStep} className="mt-5" />
@@ -129,7 +141,7 @@ export default function DocumentCreate() {
             leaving ? "opacity-40" : "opacity-100"
           }`}
         >
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 phone:grid-cols-1!">
             {templates.map((tpl) => {
               const Icon = tpl.icon;
               const active = selected === tpl.id;
@@ -196,12 +208,12 @@ export default function DocumentCreate() {
         </div>
       </StepTransition>
 
-      <div className="mt-6 flex justify-end">
+      <div className="mt-6 flex justify-end phone:justify-stretch">
         <button
           type="button"
           disabled={leaving}
           onClick={() => void goNext()}
-          className="ui-pressable rounded-lg bg-[var(--ssu-blue)] px-5 py-2.5 text-[13px] font-semibold text-white transition hover:bg-[var(--ssu-blue-dark)] disabled:opacity-70"
+          className="ui-pressable rounded-lg bg-[var(--ssu-blue)] px-5 py-2.5 text-[13px] font-semibold text-white transition hover:bg-[var(--ssu-blue-dark)] disabled:opacity-70 phone:w-full"
         >
           {leaving ? "이동 중…" : "다음 단계 >"}
         </button>

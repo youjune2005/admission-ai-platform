@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 공개 URL 공유용 Cloudflare 터널
+# 공개 URL 공유용 Cloudflare 터널 (+ 단축 링크 출력)
 # 프로젝트 루트에서 실행:  ./scripts/share.sh
 set -euo pipefail
 
@@ -7,6 +7,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${SHARE_PORT:-5173}"
 TARGET="http://127.0.0.1:${PORT}"
 cd "$ROOT"
+LOG_DIR="$ROOT/.share-logs"
+mkdir -p "$LOG_DIR"
+CF_LOG="$LOG_DIR/cloudflared-share.log"
 
 echo "==> SSU 입시행정 AI — 공개 URL 공유"
 echo "    프로젝트: $ROOT"
@@ -42,9 +45,59 @@ if ! curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:8000/api/health"; then
   exit 1
 fi
 
+cleanup() {
+  if [[ -n "${CF_PID:-}" ]] && kill -0 "$CF_PID" 2>/dev/null; then
+    kill "$CF_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 echo "==> Cloudflare Quick Tunnel 시작"
-echo "    https://xxxx.trycloudflare.com 주소가 나오면 그걸 공유하세요."
+: >"$CF_LOG"
+cloudflared tunnel --url "${TARGET}" >"$CF_LOG" 2>&1 &
+CF_PID=$!
+
+PUBLIC_URL=""
+for i in {1..60}; do
+  PUBLIC_URL="$(grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$CF_LOG" | head -n 1 || true)"
+  if [[ -n "$PUBLIC_URL" ]]; then
+    break
+  fi
+  if ! kill -0 "$CF_PID" 2>/dev/null; then
+    echo "cloudflared 가 종료되었습니다. 로그:"
+    cat "$CF_LOG"
+    exit 1
+  fi
+  sleep 0.5
+done
+
+if [[ -z "$PUBLIC_URL" ]]; then
+  echo "공개 URL을 아직 못 찾았습니다. 로그: $CF_LOG"
+  tail -n 50 "$CF_LOG" || true
+  wait "$CF_PID"
+  exit 1
+fi
+
+# shellcheck source=scripts/_shorten.sh
+source "$ROOT/scripts/_shorten.sh"
+SHORT_URL="$(shorten_url "$PUBLIC_URL")"
+
+echo ""
+echo "✅ 공유 주소: $PUBLIC_URL"
+if [[ -n "$SHORT_URL" ]]; then
+  echo "✅ 단축 링크: $SHORT_URL"
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$SHORT_URL" | pbcopy
+    echo "   (단축 링크를 클립보드에 복사했습니다)"
+  fi
+else
+  echo "⚠️  단축 실패 — 위 공유 주소를 사용하세요."
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$PUBLIC_URL" | pbcopy
+    echo "   (원본 주소를 클립보드에 복사했습니다)"
+  fi
+fi
 echo "    종료: Ctrl+C"
 echo ""
 
-exec cloudflared tunnel --url "${TARGET}"
+wait "$CF_PID"

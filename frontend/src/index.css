@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+@custom-variant phone (&:where(html[data-device="phone"] *));
+
 :root {
   --ssu-navy: #0b1f3a;
   --ssu-navy-hover: #122a4d;
@@ -220,4 +222,27 @@ textarea {
   .ui-pressable:active:not(:disabled) {
     transform: none;
   }
+}
+
+html[data-device="phone"] {
+  -webkit-text-size-adjust: 100%;
+}
+
+html[data-device="phone"] .page-enter {
+  height: auto;
+  min-height: 100%;
+}
+
+html[data-device="phone"] main {
+  -webkit-overflow-scrolling: touch;
+}
+
+html[data-device="phone"] .ui-surface:hover {
+  box-shadow: none;
+}
+
+html[data-device="phone"] input,
+html[data-device="phone"] select,
+html[data-device="phone"] textarea {
+  font-size: 16px;
 }

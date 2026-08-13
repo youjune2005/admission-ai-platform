@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import json
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from sqlalchemy import or_
+from sqlalchemy import asc, desc, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.timeutil import now_kst
 from app.db.models import BriefingPlan, GeneratedDocument
 
 STATUS_LABELS = {
@@ -80,20 +80,38 @@ def upsert_generated_document(
     academic_year: str = "2027",
     author: str = "입학팀 담당자",
     status: str = "approved",
+    existing_id: int | None = None,
+    touch_updated_at: bool = True,
 ) -> GeneratedDocument:
-    """동일 source_kind+source_id가 있으면 갱신, 없으면 생성."""
+    """같은 문서(종류+제목+학년도)가 있으면 갱신, 없으면 생성.
+
+    existing_id가 있으면 해당 작성 중/복제 문서를 우선 갱신합니다.
+    이미 보관 완료된 건은 덮지 않고 새 문서로 둡니다.
+    touch_updated_at=False면 백필처럼 조회 시 수정일을 건드리지 않습니다.
+    """
     doc: GeneratedDocument | None = None
-    if source_id is not None:
+    if existing_id is not None:
+        doc = db.get(GeneratedDocument, existing_id)
+    if doc is None and source_id is not None:
+        doc = (
+            db.query(GeneratedDocument)
+            .filter(GeneratedDocument.source_id == source_id)
+            .first()
+        )
+    if doc is None and existing_id is None:
         doc = (
             db.query(GeneratedDocument)
             .filter(
                 GeneratedDocument.source_kind == source_kind,
-                GeneratedDocument.source_id == source_id,
+                GeneratedDocument.title == title,
+                GeneratedDocument.academic_year == academic_year,
+                GeneratedDocument.status.notin_(("archived", "draft")),
             )
+            .order_by(GeneratedDocument.id.desc())
             .first()
         )
 
-    now = datetime.utcnow()
+    now = now_kst()
     resolved_type = doc_type or KIND_DOC_TYPE.get(source_kind, "계획서")
 
     if doc is None:
@@ -117,14 +135,32 @@ def upsert_generated_document(
         )
         db.add(doc)
     else:
+        next_payload = json.dumps(payload or {}, ensure_ascii=False)
+        next_pdf = pdf_path or doc.pdf_path
+        next_preview = preview_path or doc.preview_path
+        next_source_id = source_id if source_id is not None else doc.source_id
+        content_changed = (
+            doc.title != title
+            or doc.source_kind != source_kind
+            or doc.source_id != next_source_id
+            or doc.doc_type != resolved_type
+            or doc.admission_category != admission_category
+            or doc.academic_year != academic_year
+            or doc.pdf_path != next_pdf
+            or doc.preview_path != next_preview
+            or (doc.payload_json or "") != next_payload
+            or (status and doc.status != status)
+        )
         doc.title = title
+        doc.source_kind = source_kind
+        if source_id is not None:
+            doc.source_id = source_id
         doc.doc_type = resolved_type
         doc.admission_category = admission_category
         doc.academic_year = academic_year
-        doc.last_modifier = author
-        doc.pdf_path = pdf_path or doc.pdf_path
-        doc.preview_path = preview_path or doc.preview_path
-        doc.payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        doc.pdf_path = next_pdf
+        doc.preview_path = next_preview
+        doc.payload_json = next_payload
         if status:
             doc.status = status
             if status in ("approved", "archived") and not doc.approved_at:
@@ -133,15 +169,84 @@ def upsert_generated_document(
             if status == "archived":
                 doc.archived_at = now
                 doc.archive_location = doc.archive_location or "문서 보관함"
-        doc.updated_at = now
+        if content_changed:
+            doc.last_modifier = author
+            if touch_updated_at:
+                doc.updated_at = now
 
     db.commit()
     db.refresh(doc)
     return doc
 
 
+def _infer_plan_kind(payload: dict[str, Any]) -> str:
+    kind = str(payload.get("plan_kind") or payload.get("type") or "").strip().lower()
+    if kind in KIND_DOC_TYPE:
+        return kind
+    return "briefing"
+
+
+def dedupe_generated_documents(db: Session) -> int:
+    """같은 원본 계획(source_id)이 여러 건이면 한 건만 남깁니다."""
+    rows = (
+        db.query(GeneratedDocument)
+        .filter(GeneratedDocument.source_id.isnot(None))
+        .order_by(GeneratedDocument.id.asc())
+        .all()
+    )
+    by_source: dict[int, list[GeneratedDocument]] = {}
+    for row in rows:
+        if row.source_id is None:
+            continue
+        by_source.setdefault(row.source_id, []).append(row)
+
+    # visit/fair/budget가 briefing 복제본보다 원본에 가깝다
+    rank = {"visit": 0, "fair": 0, "budget": 0, "briefing": 1}
+    removed = 0
+    for group in by_source.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda d: (rank.get(d.source_kind, 9), d.id))
+        for extra in group[1:]:
+            db.delete(extra)
+            removed += 1
+    if removed:
+        db.commit()
+
+    # 작성 중이 아닌 같은 제목·종류·학년도는 1건만 유지
+    all_rows = db.query(GeneratedDocument).order_by(GeneratedDocument.id.asc()).all()
+    by_identity: dict[tuple[str, str, str], list[GeneratedDocument]] = {}
+    for row in all_rows:
+        if row.status == "draft":
+            continue
+        key = (
+            row.source_kind or "",
+            (row.title or "").strip(),
+            row.academic_year or "",
+        )
+        by_identity.setdefault(key, []).append(row)
+    for group in by_identity.values():
+        if len(group) < 2:
+            continue
+        group.sort(
+            key=lambda d: (
+                0 if d.status == "archived" else 1 if d.status == "approved" else 2,
+                0 if d.pdf_path else 1,
+                -(d.id or 0),
+            )
+        )
+        for extra in group[1:]:
+            db.delete(extra)
+            removed += 1
+    if removed:
+        db.commit()
+    return removed
+
+
 def backfill_from_briefing_plans(db: Session) -> int:
     """기존 BriefingPlan(완료분)을 보관함으로 이관."""
+    dedupe_generated_documents(db)
+
     created = 0
     plans = (
         db.query(BriefingPlan)
@@ -154,10 +259,7 @@ def backfill_from_briefing_plans(db: Session) -> int:
             continue
         exists = (
             db.query(GeneratedDocument)
-            .filter(
-                GeneratedDocument.source_kind.in_(("briefing", "budget")),
-                GeneratedDocument.source_id == plan.id,
-            )
+            .filter(GeneratedDocument.source_id == plan.id)
             .first()
         )
         if exists:
@@ -166,7 +268,22 @@ def backfill_from_briefing_plans(db: Session) -> int:
             payload = json.loads(plan.payload_json or "{}")
         except json.JSONDecodeError:
             payload = {}
-        kind = "budget" if payload.get("type") == "budget" else "briefing"
+        kind = _infer_plan_kind(payload)
+        twin = (
+            db.query(GeneratedDocument)
+            .filter(
+                GeneratedDocument.source_kind == kind,
+                GeneratedDocument.title == plan.title,
+                GeneratedDocument.status != "draft",
+            )
+            .order_by(GeneratedDocument.id.desc())
+            .first()
+        )
+        if twin:
+            if twin.source_id is None:
+                twin.source_id = plan.id
+                db.commit()
+            continue
         upsert_generated_document(
             db,
             title=plan.title,
@@ -177,9 +294,16 @@ def backfill_from_briefing_plans(db: Session) -> int:
             payload=payload,
             doc_type=KIND_DOC_TYPE.get(kind, "계획서"),
             status="approved" if plan.status == "completed" else "draft",
+            touch_updated_at=False,
         )
         created += 1
     return created
+
+
+SORTABLE_COLUMNS = {
+    "title": GeneratedDocument.title,
+    "updated_at": GeneratedDocument.updated_at,
+}
 
 
 def list_documents(
@@ -194,6 +318,8 @@ def list_documents(
     date_to: datetime | None = None,
     page: int = 1,
     page_size: int = 20,
+    sort_by: str = "updated_at",
+    sort_dir: str = "desc",
 ) -> dict[str, Any]:
     backfill_from_briefing_plans(db)
 
@@ -224,8 +350,12 @@ def list_documents(
     total = query.count()
     page = max(1, page)
     page_size = min(100, max(1, page_size))
+    sort_col = SORTABLE_COLUMNS.get(sort_by, GeneratedDocument.updated_at)
+    descending = (sort_dir or "desc").lower() != "asc"
+    primary = desc(sort_col) if descending else asc(sort_col)
+    secondary = desc(GeneratedDocument.id) if descending else asc(GeneratedDocument.id)
     rows = (
-        query.order_by(GeneratedDocument.updated_at.desc(), GeneratedDocument.id.desc())
+        query.order_by(primary, secondary)
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
@@ -290,7 +420,7 @@ def update_status(
     *,
     modifier: str = "입학팀 담당자",
 ) -> GeneratedDocument:
-    now = datetime.utcnow()
+    now = now_kst()
     doc.status = status
     doc.last_modifier = modifier
     doc.updated_at = now
@@ -305,23 +435,69 @@ def update_status(
     return doc
 
 
-def duplicate_document(db: Session, doc: GeneratedDocument) -> GeneratedDocument:
+def _unique_copy_title(db: Session, base_title: str) -> str:
+    root = base_title.strip() or "문서"
+    title = f"{root} (복제)"
+    n = 2
+    while (
+        db.query(GeneratedDocument)
+        .filter(GeneratedDocument.title == title)
+        .first()
+        is not None
+    ):
+        title = f"{root} (복제 {n})"
+        n += 1
+    return title
+
+
+def preview_image_path(doc: GeneratedDocument, *, full: bool = False) -> Path | None:
+    """미리보기 PNG. full=True면 PDF 1페이지를 원본 비율로 더 크게 렌더합니다."""
     settings = get_settings()
     out_dir = Path(settings.upload_dir) / "generated"
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    new_pdf = None
-    new_preview = None
-    if doc.pdf_path and Path(doc.pdf_path).exists():
-        new_pdf = out_dir / f"{Path(doc.pdf_path).stem}_copy_{stamp}.pdf"
-        shutil.copy2(doc.pdf_path, new_pdf)
-    if doc.preview_path and Path(doc.preview_path).exists():
-        new_preview = out_dir / f"{Path(doc.preview_path).stem}_copy_{stamp}.png"
-        shutil.copy2(doc.preview_path, new_preview)
+    pdf = Path(doc.pdf_path) if doc.pdf_path else None
+    existing = Path(doc.preview_path) if doc.preview_path else None
 
+    if full and pdf and pdf.exists():
+        dest = out_dir / f"{pdf.stem}_preview_full.png"
+        if dest.exists() and dest.stat().st_mtime >= pdf.stat().st_mtime:
+            return dest
+        try:
+            import pymupdf
+
+            rendered = pymupdf.open(pdf)
+            pix = rendered[0].get_pixmap(matrix=pymupdf.Matrix(2.4, 2.4), alpha=False)
+            pix.save(dest)
+            rendered.close()
+            return dest
+        except Exception:  # noqa: BLE001
+            if existing and existing.exists():
+                return existing
+            return None
+
+    if existing and existing.exists():
+        return existing
+    if pdf and pdf.exists():
+        dest = out_dir / f"{pdf.stem}.png"
+        if dest.exists():
+            return dest
+        try:
+            import pymupdf
+
+            rendered = pymupdf.open(pdf)
+            pix = rendered[0].get_pixmap(matrix=pymupdf.Matrix(1.8, 1.8), alpha=False)
+            pix.save(dest)
+            rendered.close()
+            return dest
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+def duplicate_document(db: Session, doc: GeneratedDocument) -> GeneratedDocument:
     clone = GeneratedDocument(
-        title=f"{doc.title} (복제)",
+        title=_unique_copy_title(db, doc.title),
         source_kind=doc.source_kind,
         source_id=None,
         doc_type=doc.doc_type,
@@ -331,8 +507,8 @@ def duplicate_document(db: Session, doc: GeneratedDocument) -> GeneratedDocument
         last_modifier=doc.author,
         status="draft",
         version="v1.0",
-        pdf_path=str(new_pdf) if new_pdf else doc.pdf_path,
-        preview_path=str(new_preview) if new_preview else doc.preview_path,
+        pdf_path=None,
+        preview_path=None,
         payload_json=doc.payload_json,
         approver=None,
         approved_at=None,

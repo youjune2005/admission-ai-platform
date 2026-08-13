@@ -24,31 +24,13 @@ import {
 } from "lucide-react";
 import { apiClient } from "../api/client";
 import Markdown from "../components/Markdown";
+import { formatKstDateTimeLong, parseApiDate } from "../lib/datetime";
 import type { Inquiry } from "../types";
-
-function formatActivityTime(value?: string | null) {
-  if (!value) return "";
-  const raw = value.endsWith("Z") || /[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value}Z`;
-  const dt = new Date(raw);
-  if (Number.isNaN(dt.getTime())) return "";
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(dt);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
-}
 
 function sortActivitiesNewestFirst<T extends { id: number; created_at: string }>(items: T[]) {
   return [...items].sort((a, b) => {
-    const ta = new Date(a.created_at.endsWith("Z") ? a.created_at : `${a.created_at}Z`).getTime();
-    const tb = new Date(b.created_at.endsWith("Z") ? b.created_at : `${b.created_at}Z`).getTime();
+    const ta = parseApiDate(a.created_at)?.getTime() ?? 0;
+    const tb = parseApiDate(b.created_at)?.getTime() ?? 0;
     if (tb !== ta) return tb - ta;
     return b.id - a.id;
   });
@@ -237,7 +219,7 @@ export default function InquiryDraft() {
     "inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800";
 
   return (
-    <div className="mx-auto flex h-full max-w-[1400px] flex-col gap-4 overflow-y-auto px-6 py-6">
+    <div className="mx-auto flex h-full max-w-[1400px] flex-col gap-4 overflow-y-auto px-6 py-6 phone:h-auto phone:px-4 phone:py-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[12px] text-slate-500">
@@ -247,7 +229,7 @@ export default function InquiryDraft() {
             <span className="mx-1.5">/</span>
             답변 초안 확인
           </p>
-          <h1 className="mt-1 text-[24px] font-bold text-slate-900">답변 초안 확인</h1>
+          <h1 className="mt-1 text-[24px] font-bold text-slate-900 phone:text-[20px]">답변 초안 확인</h1>
         </div>
       </div>
 
@@ -273,7 +255,7 @@ export default function InquiryDraft() {
           </section>
 
           <section className="ui-surface rounded-xl border border-[var(--ssu-border)] bg-white">
-            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4 phone:flex-col phone:items-start">
               <p className="text-[15px] font-bold text-slate-900">AI 답변 초안</p>
               <button
                 type="button"
@@ -348,7 +330,7 @@ export default function InquiryDraft() {
             </div>
           </section>
 
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 phone:pb-2">
             <button
               type="button"
               onClick={regenerate}
@@ -379,7 +361,7 @@ export default function InquiryDraft() {
               type="button"
               onClick={markReviewed}
               disabled={saving}
-              className="ui-pressable ml-auto inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-blue)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)] disabled:opacity-50"
+              className="ui-pressable ml-auto inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-blue)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)] disabled:opacity-50 phone:ml-0 phone:w-full phone:justify-center"
             >
               <Check className="h-4 w-4" />
               검토 완료
@@ -483,7 +465,7 @@ export default function InquiryDraft() {
                   <div>
                     <p className="text-[12px] font-medium text-slate-800">{act.message}</p>
                     <p className="mt-0.5 text-[11px] text-slate-400">
-                      {formatActivityTime(act.created_at)}
+                      {formatKstDateTimeLong(act.created_at)}
                     </p>
                   </div>
                 </li>

@@ -1,9 +1,9 @@
 import json
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.timeutil import now_kst
 from app.db.database import get_db
 from app.db.models import Inquiry, UploadedDocument
 from app.schemas.inquiry import (
@@ -103,8 +103,8 @@ def generate_inquiry(payload: InquiryCreateRequest, db: Session = Depends(get_db
         masked_content=masked,
         status="pending",
         selected_document_ids_json=json.dumps(payload.document_ids or [], ensure_ascii=False),
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
+        created_at=now_kst(),
+        updated_at=now_kst(),
     )
     db.add(inquiry)
     db.commit()
@@ -200,7 +200,7 @@ def update_inquiry(inquiry_id: int, payload: InquiryUpdateRequest, db: Session =
         inquiry.status = payload.status
         if payload.status == "reviewed":
             add_activity(db, inquiry, "검토 완료")
-    inquiry.updated_at = datetime.utcnow()
+    inquiry.updated_at = now_kst()
     db.commit()
     db.refresh(inquiry)
     return _out(inquiry)

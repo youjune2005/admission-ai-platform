@@ -105,8 +105,25 @@ if [[ -z "$PUBLIC_URL" ]]; then
   exit 1
 fi
 
+# shellcheck source=scripts/_shorten.sh
+source "$ROOT/scripts/_shorten.sh"
+SHORT_URL="$(shorten_url "$PUBLIC_URL")"
+
 echo ""
 echo "✅ 공유 주소: $PUBLIC_URL"
+if [[ -n "$SHORT_URL" ]]; then
+  echo "✅ 단축 링크: $SHORT_URL"
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$SHORT_URL" | pbcopy
+    echo "   (단축 링크를 클립보드에 복사했습니다)"
+  fi
+else
+  echo "⚠️  단축 실패 — 위 공유 주소를 사용하세요."
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf '%s' "$PUBLIC_URL" | pbcopy
+    echo "   (원본 주소를 클립보드에 복사했습니다)"
+  fi
+fi
 echo "   (이 터미널을 닫거나 Ctrl+C 하면 터널이 끊깁니다)"
 echo ""
 

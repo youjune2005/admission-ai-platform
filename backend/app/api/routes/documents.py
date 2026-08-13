@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.timeutil import now_kst
 from app.db.database import get_db
 from app.db.models import DocumentChunk, UploadedDocument
 from app.schemas.documents import DocumentListResponse, DocumentOut, IngestResult
@@ -138,7 +139,7 @@ async def upload_document(
     if dest_path.exists():
         stem = Path(original_name).stem
         ext = Path(original_name).suffix
-        dest_path = upload_dir / f"{stem}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{ext}"
+        dest_path = upload_dir / f"{stem}_{now_kst().strftime('%Y%m%d%H%M%S')}{ext}"
 
     with dest_path.open("wb") as f:
         shutil.copyfileobj(file.file, f)
@@ -150,7 +151,7 @@ async def upload_document(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=422, detail=f"서류를 처리하는 중 오류가 발생했습니다: {exc}") from exc
 
-    now = datetime.utcnow()
+    now = now_kst()
     doc = UploadedDocument(
         filename=display_name,
         stored_path=str(dest_path.resolve()),
@@ -172,7 +173,7 @@ async def upload_document(
     rag_chunks = 0
     if not text.strip():
         doc.status = "needs_update"
-        doc.updated_at = datetime.utcnow()
+        doc.updated_at = now_kst()
         db.commit()
         db.refresh(doc)
         # DB에는 등록됐지만 RAG 불가 — 호출자에게 안내
@@ -188,7 +189,7 @@ async def upload_document(
         rag_chunks = ingest_document(db, doc, text)
     except Exception as exc:  # noqa: BLE001
         doc.status = "needs_update"
-        doc.updated_at = datetime.utcnow()
+        doc.updated_at = now_kst()
         db.commit()
         db.refresh(doc)
         raise HTTPException(
@@ -198,7 +199,7 @@ async def upload_document(
 
     if rag_chunks <= 0:
         doc.status = "needs_update"
-        doc.updated_at = datetime.utcnow()
+        doc.updated_at = now_kst()
         db.commit()
         db.refresh(doc)
         raise HTTPException(
@@ -210,7 +211,7 @@ async def upload_document(
         )
 
     doc.status = "latest"
-    doc.updated_at = datetime.utcnow()
+    doc.updated_at = now_kst()
     db.commit()
     db.refresh(doc)
     return _to_out(doc, rag_chunks)

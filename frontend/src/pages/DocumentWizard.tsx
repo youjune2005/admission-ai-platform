@@ -16,10 +16,20 @@ import {
 import { API_BASE_URL, apiClient } from "../api/client";
 import WizardStepper from "../components/WizardStepper";
 import StepTransition from "../components/StepTransition";
+import ContentReviewPanel from "../components/ContentReviewPanel";
+import RegulationReviewPanel from "../components/RegulationReviewPanel";
 import {
   BRIEFING_FLOW_STEPS,
   flowStepFromWizard,
 } from "../constants/documentFlow";
+import { asNumber, asRecord, asString } from "../lib/archiveWizard";
+import { applyReviewPatches } from "../lib/reviewPatches";
+import type {
+  ContentReviewPatch,
+  ContentReviewResult,
+  GeneratedDocument,
+  RegulationReviewResult,
+} from "../types";
 
 type ProgramRow = {
   id: string;
@@ -28,14 +38,63 @@ type ProgramRow = {
   owner: string;
 };
 
+type BudgetLineRow = {
+  id: string;
+  name: string;
+  basis: string;
+  unit_price: number;
+  quantity: number;
+};
+
 type StaffPerson = {
   id: number;
   name: string;
 };
 
-type WizardStep = 1 | 2 | 3 | 4 | 5;
+type WizardStep = 1 | 2 | 3 | 4 | 5 | 6;
 
-const BUDGET_OPTIONS = ["다과", "홍보물", "현수막", "장소 장비", "교통비"] as const;
+const STEP_LABELS = [
+  "문서 선택",
+  "기본정보 입력",
+  "예산 입력",
+  "계획 생성",
+  "내용 구성",
+  "규정 검토",
+  "완성 및 저장",
+] as const;
+
+const DEFAULT_BUDGET_OPTIONS = ["다과", "홍보물", "현수막", "장소 장비", "교통비"] as const;
+
+const BUDGET_LINE_DEFAULTS: Record<
+  string,
+  { unit_price: number; quantityFromAttendees: (n: number) => number; basis: (n: number, unit: number, qty: number) => string }
+> = {
+  다과: {
+    unit_price: 8000,
+    quantityFromAttendees: (n) => n,
+    basis: (_n, unit, qty) => `${qty}명 × ${unit.toLocaleString("ko-KR")}원`,
+  },
+  홍보물: {
+    unit_price: 1500,
+    quantityFromAttendees: (n) => n,
+    basis: (_n, unit, qty) => `리플렛 ${qty}부 × ${unit.toLocaleString("ko-KR")}원`,
+  },
+  현수막: {
+    unit_price: 120000,
+    quantityFromAttendees: () => 1,
+    basis: () => "현수막 1식",
+  },
+  "장소 장비": {
+    unit_price: 300000,
+    quantityFromAttendees: () => 1,
+    basis: () => "음향·빔 등 1식",
+  },
+  교통비: {
+    unit_price: 50000,
+    quantityFromAttendees: (n) => Math.max(1, Math.floor(n / 50)),
+    basis: (_n, unit, qty) => `차량 ${qty}대 × ${unit.toLocaleString("ko-KR")}원`,
+  },
+};
 
 const DEFAULT_PROGRAMS: ProgramRow[] = [
   { id: "1", time: "14:00~14:10", content: "개회 및 환영 인사", owner: "" },
@@ -55,10 +114,39 @@ function formatBudgetInput(raw: string) {
   return Number(digits).toLocaleString("ko-KR");
 }
 
+function won(n: number) {
+  return `${Number(n || 0).toLocaleString("ko-KR")}원`;
+}
+
+function buildBudgetLinesFromSelection(
+  selected: string[],
+  attendeesRaw: string,
+  prev: BudgetLineRow[]
+): BudgetLineRow[] {
+  const attendees = Number(attendeesRaw.replace(/[^\d]/g, "") || "100") || 100;
+  const prevMap = new Map(prev.map((r) => [r.name, r]));
+  return selected.map((name, idx) => {
+    const existing = prevMap.get(name);
+    if (existing) return existing;
+    const def = BUDGET_LINE_DEFAULTS[name];
+    const unit_price = def?.unit_price ?? 100000;
+    const quantity = def?.quantityFromAttendees(attendees) ?? 1;
+    const basis = def?.basis(attendees, unit_price, quantity) ?? `${name} 1식`;
+    return {
+      id: `${Date.now()}-${idx}`,
+      name,
+      basis,
+      unit_price,
+      quantity,
+    };
+  });
+}
+
 export default function DocumentWizard() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const template = params.get("template") || "입시설명회 운영계획서";
+  const archiveIdParam = params.get("archiveId");
 
   const [step, setStep] = useState<WizardStep>(1);
   const [eventName, setEventName] = useState("2027학년도 수시 입시설명회");
@@ -68,7 +156,10 @@ export default function DocumentWizard() {
   const [location, setLocation] = useState("한경직기념관 대예배실");
   const [department, setDepartment] = useState("입학팀");
   const [budgetLimit, setBudgetLimit] = useState("2,000,000");
-  const [budgetItems, setBudgetItems] = useState<string[]>([...BUDGET_OPTIONS]);
+  const [budgetOptions, setBudgetOptions] = useState<string[]>([...DEFAULT_BUDGET_OPTIONS]);
+  const [budgetItems, setBudgetItems] = useState<string[]>([...DEFAULT_BUDGET_OPTIONS]);
+  const [newBudgetItem, setNewBudgetItem] = useState("");
+  const [budgetLines, setBudgetLines] = useState<BudgetLineRow[]>([]);
   const [programs, setPrograms] = useState<ProgramRow[]>(DEFAULT_PROGRAMS);
   const [staffList, setStaffList] = useState<StaffPerson[]>([]);
   const [activeOwnerId, setActiveOwnerId] = useState<string | null>(null);
@@ -80,8 +171,22 @@ export default function DocumentWizard() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
+  const [hydrating, setHydrating] = useState(!!archiveIdParam);
+  const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
+  const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
+  const [regulationReview, setRegulationReview] = useState<RegulationReviewResult | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const title = useMemo(() => `${eventName} 운영계획서`, [eventName]);
+  const budgetTotal = useMemo(
+    () => budgetLines.reduce((sum, r) => sum + r.unit_price * r.quantity, 0),
+    [budgetLines]
+  );
+  const budgetLimitNumber = useMemo(
+    () => Number(budgetLimit.replace(/[^\d]/g, "") || "0"),
+    [budgetLimit]
+  );
+  const budgetRemaining = budgetLimitNumber - budgetTotal;
 
   const loadStaff = async () => {
     const res = await apiClient.get<StaffPerson[]>("/api/staff");
@@ -91,6 +196,85 @@ export default function DocumentWizard() {
   useEffect(() => {
     loadStaff().catch(() => setStaffList([]));
   }, []);
+
+  useEffect(() => {
+    if (!archiveIdParam) return;
+    const id = Number(archiveIdParam);
+    if (!Number.isFinite(id) || id <= 0) {
+      setHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await apiClient.get<GeneratedDocument>(`/api/archive/${id}`);
+        if (cancelled) return;
+        const p = asRecord(data.payload) ?? {};
+        setArchiveId(data.id);
+        setEventName(asString(p.event_name, "2027학년도 수시 입시설명회"));
+        setTarget(asString(p.target, "서울 지역 고등학생 및 학부모"));
+        setAttendees(asString(p.attendees, "100"));
+        setSchedule(asString(p.schedule));
+        setLocation(asString(p.location));
+        setDepartment(asString(p.department, "입학팀"));
+        const limitRaw = p.budget_limit;
+        setBudgetLimit(
+          formatBudgetInput(
+            typeof limitRaw === "number" ? String(limitRaw) : asString(limitRaw, "2000000")
+          )
+        );
+        const itemNames = Array.isArray(p.budget_items)
+          ? p.budget_items.map((n) => asString(n)).filter(Boolean)
+          : [];
+        const lineRows: BudgetLineRow[] = Array.isArray(p.budget_lines)
+          ? p.budget_lines.flatMap((row, idx) => {
+              const rec = asRecord(row);
+              if (!rec) return [];
+              return [
+                {
+                  id: `resume-${idx}`,
+                  name: asString(rec.name),
+                  basis: asString(rec.basis),
+                  unit_price: asNumber(rec.unit_price),
+                  quantity: asNumber(rec.quantity, 1),
+                },
+              ];
+            })
+          : [];
+        const names = itemNames.length ? itemNames : lineRows.map((r) => r.name).filter(Boolean);
+        if (names.length) {
+          setBudgetOptions((prev) => Array.from(new Set([...prev, ...names])));
+          setBudgetItems(names);
+        }
+        if (lineRows.length) setBudgetLines(lineRows);
+        const programRows: ProgramRow[] = Array.isArray(p.programs)
+          ? p.programs.flatMap((row, idx) => {
+              const rec = asRecord(row);
+              if (!rec) return [];
+              return [
+                {
+                  id: `resume-p-${idx}`,
+                  time: asString(rec.time),
+                  content: asString(rec.content),
+                  owner: asString(rec.owner),
+                },
+              ];
+            })
+          : [];
+        if (programRows.length) setPrograms(programRows);
+        setPdfUrl(null);
+        setPreviewUrl(null);
+        setStep(1);
+      } catch {
+        setError("작성 중이던 문서를 불러오지 못했습니다.");
+      } finally {
+        if (!cancelled) setHydrating(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [archiveIdParam]);
 
   const saveStaffName = async (raw: string) => {
     const name = raw.trim();
@@ -150,6 +334,49 @@ export default function DocumentWizard() {
     );
   };
 
+  const isDefaultBudgetOption = (item: string) =>
+    (DEFAULT_BUDGET_OPTIONS as readonly string[]).includes(item);
+
+  const addBudgetOption = () => {
+    const name = newBudgetItem.trim().replace(/\s+/g, " ");
+    if (!name) return;
+    const exists = budgetOptions.some((o) => o === name);
+    if (exists) {
+      if (!budgetItems.includes(name)) {
+        setBudgetItems((prev) => [...prev, name]);
+      }
+      setNewBudgetItem("");
+      return;
+    }
+    setBudgetOptions((prev) => [...prev, name]);
+    setBudgetItems((prev) => [...prev, name]);
+    setNewBudgetItem("");
+  };
+
+  const removeBudgetOption = (item: string) => {
+    if (isDefaultBudgetOption(item)) return;
+    setBudgetOptions((prev) => prev.filter((v) => v !== item));
+    setBudgetItems((prev) => prev.filter((v) => v !== item));
+  };
+
+  const updateBudgetLine = (id: string, patch: Partial<BudgetLineRow>) => {
+    setBudgetLines((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  };
+
+  const goToBudgetStep = () => {
+    setError(null);
+    if (!eventName.trim()) {
+      setError("행사명을 입력해주세요.");
+      return;
+    }
+    if (budgetItems.length === 0) {
+      setError("예산 항목 포함 조건을 1개 이상 선택해주세요.");
+      return;
+    }
+    setBudgetLines((prev) => buildBudgetLinesFromSelection(budgetItems, attendees, prev));
+    setStep(2);
+  };
+
   const saveToArchive = async () => {
     setSavingArchive(true);
     try {
@@ -164,68 +391,208 @@ export default function DocumentWizard() {
     }
   };
 
+  const buildPayload = () => ({
+    event_name: eventName.trim(),
+    target: target.trim(),
+    attendees: attendees.trim() || "100",
+    schedule: schedule.trim(),
+    location: location.trim(),
+    department: department.trim() || "입학팀",
+    budget_limit: budgetLimit.replace(/,/g, "") || "2000000",
+    budget_items: budgetItems,
+    budget_lines: budgetLines.map(({ name, basis, unit_price, quantity }) => ({
+      name,
+      basis,
+      unit_price,
+      quantity,
+    })),
+    programs: programs.map(({ time, content, owner }) => ({ time, content, owner })),
+    archive_id: archiveId,
+  });
+
+  const applyBriefingPayload = (p: Record<string, unknown>) => {
+    setEventName(asString(p.event_name, eventName));
+    setTarget(asString(p.target, target));
+    setAttendees(asString(p.attendees, attendees));
+    setSchedule(asString(p.schedule, schedule));
+    setLocation(asString(p.location, location));
+    setDepartment(asString(p.department, department));
+    const limitRaw = p.budget_limit;
+    if (limitRaw != null) {
+      setBudgetLimit(
+        formatBudgetInput(typeof limitRaw === "number" ? String(limitRaw) : asString(limitRaw, budgetLimit))
+      );
+    }
+    const lineRows: BudgetLineRow[] = Array.isArray(p.budget_lines)
+      ? p.budget_lines.flatMap((row, idx) => {
+          const rec = asRecord(row);
+          if (!rec) return [];
+          return [
+            {
+              id: budgetLines[idx]?.id ?? `patched-${idx}`,
+              name: asString(rec.name),
+              basis: asString(rec.basis),
+              unit_price: asNumber(rec.unit_price),
+              quantity: asNumber(rec.quantity, 1),
+            },
+          ];
+        })
+      : [];
+    if (lineRows.length) {
+      setBudgetLines(lineRows);
+      setBudgetItems(lineRows.map((r) => r.name).filter(Boolean));
+    }
+    const programRows: ProgramRow[] = Array.isArray(p.programs)
+      ? p.programs.flatMap((row, idx) => {
+          const rec = asRecord(row);
+          if (!rec) return [];
+          return [
+            {
+              id: programs[idx]?.id ?? `patched-p-${idx}`,
+              time: asString(rec.time),
+              content: asString(rec.content),
+              owner: asString(rec.owner),
+            },
+          ];
+        })
+      : [];
+    if (programRows.length) setPrograms(programRows);
+  };
+
+  const generatePlan = async (payload: ReturnType<typeof buildPayload>) => {
+    const { data } = await apiClient.post<{
+      id: number;
+      pdf_url: string | null;
+      preview_url: string | null;
+      title: string;
+      archive_id?: number | null;
+    }>("/api/plans/briefing", payload);
+    setPlanId(data.id);
+    setArchiveId(data.archive_id ?? null);
+    setPdfUrl(data.pdf_url);
+    setPreviewUrl(data.preview_url);
+    await loadStaff();
+  };
+
+  const runRegulationReview = async (payload: ReturnType<typeof buildPayload>) => {
+    setPausedPhase(null);
+    setStep(5);
+    setLoadingLabel("관련 규정을 검토하고 있습니다…");
+    const { archive_id: _aid, ...reviewPayload } = payload;
+    const { data } = await apiClient.post<RegulationReviewResult>("/api/plans/review/regulations", {
+      kind: "briefing",
+      payload: reviewPayload,
+    });
+    setRegulationReview(data);
+    if (!data.ok && data.findings.length > 0) {
+      setPausedPhase("regulation");
+      setLoadingLabel("");
+      return;
+    }
+    setStep(6);
+    setLoadingLabel("");
+  };
+
+  const runContentReview = async (payload: ReturnType<typeof buildPayload>) => {
+    setPausedPhase(null);
+    setStep(4);
+    setLoadingLabel("입력하신 정보로 문서 내용을 구성하고 있습니다…");
+    const { archive_id: _aid, ...reviewPayload } = payload;
+    const { data } = await apiClient.post<ContentReviewResult>("/api/plans/review/consistency", {
+      kind: "briefing",
+      payload: reviewPayload,
+    });
+    setContentReview(data);
+    if (!data.ok && data.issues.length > 0) {
+      setPausedPhase("content");
+      setLoadingLabel("");
+      return;
+    }
+    await runRegulationReview(payload);
+  };
+
   const startGeneration = async () => {
     setError(null);
     setPdfUrl(null);
     setPreviewUrl(null);
+    setPausedPhase(null);
+    setContentReview(null);
+    setRegulationReview(null);
 
-    const payload = {
-      event_name: eventName.trim(),
-      target: target.trim(),
-      attendees: attendees.trim() || "100",
-      schedule: schedule.trim(),
-      location: location.trim(),
-      department: department.trim() || "입학팀",
-      budget_limit: budgetLimit.replace(/,/g, "") || "2000000",
-      budget_items: budgetItems,
-      programs: programs.map(({ time, content, owner }) => ({ time, content, owner })),
-    };
+    if (budgetLines.length === 0) {
+      setError("예산 항목이 없습니다. 이전 단계에서 항목을 선택해주세요.");
+      return;
+    }
 
+    const payload = buildPayload();
     try {
-      setStep(2);
-      setLoadingLabel("행사 계획안을 생성하고 있습니다…");
-      const apiPromise = apiClient.post<{
-        id: number;
-        pdf_url: string | null;
-        preview_url: string | null;
-        title: string;
-        archive_id?: number | null;
-      }>("/api/plans/briefing", payload);
-
-      await sleep(1200);
-
       setStep(3);
-      setLoadingLabel("입력하신 정보로 문서 내용을 구성하고 있습니다…");
-      const { data } = await apiPromise;
-      setPlanId(data.id);
-      setArchiveId(data.archive_id ?? null);
-      setPdfUrl(data.pdf_url);
-      setPreviewUrl(data.preview_url);
-      await loadStaff();
-      await sleep(1400);
-
-      setStep(4);
-      setLoadingLabel("관련 규정을 검토하고 있습니다…");
-      await sleep(1300);
-
-      setStep(5);
-      setLoadingLabel("");
+      setLoadingLabel("행사 계획안을 생성하고 있습니다…");
+      const apiPromise = generatePlan(payload);
+      await sleep(1200);
+      await apiPromise;
+      await runContentReview(payload);
     } catch (e) {
-      setStep(1);
+      setStep(2);
+      setPausedPhase(null);
       setLoadingLabel("");
       setError(e instanceof Error ? e.message : "문서 생성에 실패했습니다.");
     }
   };
 
+  const continueContentReview = async (patches: ContentReviewPatch[]) => {
+    setReviewBusy(true);
+    setError(null);
+    try {
+      let payload = buildPayload();
+      if (patches.length) {
+        const { archive_id, ...body } = payload;
+        const patched = applyReviewPatches(body, patches);
+        applyBriefingPayload(patched);
+        payload = { ...patched, archive_id };
+        setPausedPhase(null);
+        setStep(3);
+        setLoadingLabel("수정된 내용으로 문서를 다시 구성하고 있습니다…");
+        await generatePlan(payload);
+      }
+      setContentReview(null);
+      await runRegulationReview(payload);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "수정 반영에 실패했습니다.");
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const skipContentReview = async () => {
+    setReviewBusy(true);
+    try {
+      setContentReview(null);
+      await runRegulationReview(buildPayload());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "규정 검토에 실패했습니다.");
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  if (hydrating) {
+    return (
+      <div className="mx-auto max-w-[1180px] px-6 py-16 text-center text-[14px] text-slate-500">
+        작성 중이던 문서를 불러오는 중…
+      </div>
+    );
+  }
+
   return (
-    <div className="mx-auto max-w-[1180px] px-6 py-6">
-      {step === 5 ? (
+    <div className="mx-auto max-w-[1180px] px-6 py-6 phone:px-4 phone:py-4">
+      {step === 6 ? (
         <div className="mb-4 flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setStep(1)}
+            onClick={() => setStep(2)}
             className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100"
-            aria-label="기본정보로 돌아가기"
+            aria-label="예산 입력으로 돌아가기"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
@@ -233,7 +600,7 @@ export default function DocumentWizard() {
             <div className="flex items-center gap-2">
               <h1 className="text-[22px] font-bold text-slate-900">운영계획서 완성</h1>
               <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-                규정 검토 완료
+                {regulationReview && !regulationReview.ok ? "규정 검토 확인 완료" : "규정 검토 완료"}
               </span>
             </div>
             <p className="mt-0.5 text-[12px] text-slate-500">{title}</p>
@@ -243,16 +610,21 @@ export default function DocumentWizard() {
         <div className="mb-4 flex items-start gap-3">
           <button
             type="button"
-            onClick={() => navigate("/documents/create")}
+            onClick={() => {
+              if (step === 2) setStep(1);
+              else navigate("/documents/create");
+            }}
             className="mt-0.5 rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100"
-            aria-label="문서 선택으로 돌아가기"
+            aria-label="이전으로 돌아가기"
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
           <div>
             <h1 className="text-[22px] font-bold text-slate-900">{template} 작성</h1>
             <p className="mt-1 text-[13px] text-slate-500">
-              기본 정보를 입력하면 계획서 초안과 PDF를 자동으로 생성합니다.
+              {step === 2
+                ? "선택한 예산 항목의 단가와 수량을 입력한 뒤 계획서를 생성합니다."
+                : "기본 정보를 입력하면 계획서 초안과 PDF를 자동으로 생성합니다."}
             </p>
           </div>
         </div>
@@ -481,8 +853,9 @@ export default function DocumentWizard() {
               <div>
                 <p className="text-[12px] font-medium text-slate-600">예산 항목 포함 조건</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {BUDGET_OPTIONS.map((item) => {
+                  {budgetOptions.map((item) => {
                     const checked = budgetItems.includes(item);
+                    const custom = !isDefaultBudgetOption(item);
                     return (
                       <label
                         key={item}
@@ -499,15 +872,55 @@ export default function DocumentWizard() {
                           className="accent-[var(--ssu-blue)]"
                         />
                         {item}
+                        {custom && (
+                          <button
+                            type="button"
+                            aria-label={`${item} 항목 삭제`}
+                            className="rounded p-0.5 text-slate-400 hover:bg-red-50 hover:text-red-500"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              removeBudgetOption(item);
+                            }}
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
                       </label>
                     );
                   })}
                 </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <input
+                    value={newBudgetItem}
+                    onChange={(e) => setNewBudgetItem(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addBudgetOption();
+                      }
+                    }}
+                    className="field-input max-w-[220px] text-[12px]"
+                    placeholder="항목명 입력 (예: 기념품)"
+                  />
+                  <button
+                    type="button"
+                    onClick={addBudgetOption}
+                    disabled={!newBudgetItem.trim()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-[var(--ssu-blue)] hover:bg-blue-50 disabled:opacity-40"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    항목 추가
+                  </button>
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-400">
+                  기본 항목 외에 필요한 예산 항목을 추가한 뒤 체크하세요.
+                </p>
               </div>
             </div>
           </section>
 
-          <div className="mt-5 flex justify-end gap-2">
+          <div className="mt-5 flex justify-end gap-2 phone:flex-col-reverse">
             <button
               type="button"
               onClick={() => navigate("/documents/create")}
@@ -517,30 +930,169 @@ export default function DocumentWizard() {
             </button>
             <button
               type="button"
-              onClick={startGeneration}
+              onClick={goToBudgetStep}
               disabled={!eventName.trim()}
               className="rounded-lg bg-[var(--ssu-blue)] px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)] disabled:opacity-50"
             >
-              예산안 생성
+              다음 (예산 입력)
             </button>
           </div>
         </>
       )}
 
-      {(step === 2 || step === 3 || step === 4) && (
+      {step === 2 && (
+        <>
+          <section className="mt-6 rounded-xl border border-[var(--ssu-border)] bg-white p-5 shadow-sm">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-[12px] font-medium text-slate-600">총 예산 한도</p>
+                <p className="mt-1 text-[18px] font-bold text-slate-900">{won(budgetLimitNumber)}</p>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  기본정보에서 입력한 한도입니다. 항목별 단가·수량만 수정하세요.
+                </p>
+              </div>
+              <div className="rounded-lg bg-slate-50 px-4 py-3">
+                <div className="flex justify-between text-[12px] text-slate-600">
+                  <span>합계</span>
+                  <span className="font-semibold text-slate-900">{won(budgetTotal)}</span>
+                </div>
+                <div className="mt-1 flex justify-between text-[12px] text-slate-600">
+                  <span>잔여</span>
+                  <span
+                    className={`font-semibold ${
+                      budgetRemaining < 0 ? "text-red-600" : "text-emerald-700"
+                    }`}
+                  >
+                    {won(budgetRemaining)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <p className="mt-5 text-[14px] font-bold text-slate-900">예산 항목 입력</p>
+            <p className="mt-1 text-[12px] text-slate-500">
+              앞에서 선택한 항목의 이름은 변경할 수 없습니다. 산출근거·단가·수량만 입력하세요.
+            </p>
+
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-[12px]">
+                <thead>
+                  <tr className="border-b border-slate-100 text-slate-500">
+                    <th className="px-2 py-2 font-medium">예산 항목</th>
+                    <th className="px-2 py-2 font-medium">산출 근거</th>
+                    <th className="px-2 py-2 font-medium">단가</th>
+                    <th className="px-2 py-2 font-medium">수량</th>
+                    <th className="px-2 py-2 font-medium">금액</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {budgetLines.map((row) => (
+                    <tr key={row.id} className="border-b border-slate-50">
+                      <td className="px-2 py-2">
+                        <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 font-medium text-slate-800">
+                          {row.name}
+                        </div>
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          value={row.basis}
+                          onChange={(e) => updateBudgetLine(row.id, { basis: e.target.value })}
+                          className="field-input"
+                          placeholder="예: 50명 × 10,000원"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          value={row.unit_price.toLocaleString("ko-KR")}
+                          onChange={(e) =>
+                            updateBudgetLine(row.id, {
+                              unit_price: Number(e.target.value.replace(/[^\d]/g, "") || "0"),
+                            })
+                          }
+                          className="field-input text-right"
+                        />
+                      </td>
+                      <td className="px-2 py-2">
+                        <input
+                          value={row.quantity}
+                          onChange={(e) =>
+                            updateBudgetLine(row.id, {
+                              quantity: Number(e.target.value.replace(/[^\d]/g, "") || "0"),
+                            })
+                          }
+                          className="field-input text-right"
+                        />
+                      </td>
+                      <td className="px-2 py-2 text-right font-semibold text-slate-800">
+                        {won(row.unit_price * row.quantity)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <div className="mt-5 flex justify-end gap-2 phone:flex-col-reverse">
+            <button
+              type="button"
+              onClick={() => setStep(1)}
+              className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-[13px] font-medium text-slate-700"
+            >
+              이전
+            </button>
+            <button
+              type="button"
+              onClick={() => void startGeneration()}
+              className="rounded-lg bg-[var(--ssu-blue)] px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)]"
+            >
+              계획서 생성
+            </button>
+          </div>
+        </>
+      )}
+
+      {step === 4 && pausedPhase === "content" && contentReview && (
+        <ContentReviewPanel
+          result={contentReview}
+          busy={reviewBusy}
+          onApply={(patches) => void continueContentReview(patches)}
+          onSkip={() => void skipContentReview()}
+        />
+      )}
+
+      {step === 5 && pausedPhase === "regulation" && regulationReview && (
+        <RegulationReviewPanel
+          result={regulationReview}
+          busy={reviewBusy}
+          onBack={() => {
+            setPausedPhase(null);
+            setStep(2);
+          }}
+          onContinue={() => {
+            setPausedPhase(null);
+            setStep(6);
+            setLoadingLabel("");
+          }}
+        />
+      )}
+
+      {(step === 3 ||
+        (step === 4 && pausedPhase !== "content") ||
+        (step === 5 && pausedPhase !== "regulation")) && (
         <section className="mt-10 flex min-h-[360px] flex-col items-center justify-center rounded-xl border border-[var(--ssu-border)] bg-white px-6 py-16 text-center shadow-sm">
           <LoaderCircle className="h-10 w-10 animate-spin text-[var(--ssu-blue)]" />
           <p className="mt-5 text-[16px] font-bold text-slate-900">
-            {step === 2 && "계획 생성 중"}
-            {step === 3 && "내용 구성 중"}
-            {step === 4 && "규정 검토 중"}
+            {step === 3 && "계획 생성 중"}
+            {step === 4 && "내용 구성 중"}
+            {step === 5 && "규정 검토 중"}
           </p>
           <p className="mt-2 max-w-md text-[13px] leading-relaxed text-slate-500">
             {loadingLabel}
           </p>
           <div className="mt-6 flex gap-2">
-            {STEP_LABELS.slice(1, 4).map((label, idx) => {
-              const n = (idx + 2) as WizardStep;
+            {STEP_LABELS.slice(3, 6).map((label, idx) => {
+              const n = (idx + 3) as WizardStep;
               const active = n === step;
               const done = n < step;
               return (
@@ -562,7 +1114,7 @@ export default function DocumentWizard() {
         </section>
       )}
 
-      {step === 5 && (
+      {step === 6 && (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
           <section className="rounded-xl border border-[var(--ssu-border)] bg-[#f5f6f8] p-5">
             <div className="mx-auto max-w-[720px] rounded-sm bg-white px-10 py-10 shadow-sm ring-1 ring-slate-200">
@@ -594,7 +1146,7 @@ export default function DocumentWizard() {
             <section className="rounded-xl border border-[var(--ssu-border)] bg-white p-4">
               <p className="text-[13px] font-bold text-slate-900">완료 체크리스트</p>
               <ul className="mt-3 space-y-2 text-[12px] text-slate-700">
-                {["기본정보 입력", "계획 생성", "내용 구성", "규정 검토", "표절·형식 점검"].map(
+                {["기본정보 입력", "예산 입력", "계획 생성", "내용 구성", "규정 검토"].map(
                   (item) => (
                     <li key={item} className="flex items-center gap-2">
                       <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-white">

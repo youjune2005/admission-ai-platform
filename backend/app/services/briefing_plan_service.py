@@ -206,11 +206,33 @@ def _draw_table(
 def build_budget_rows(payload: dict[str, Any]) -> list[list[str]]:
     attendees = int(str(payload.get("attendees", "100")).replace("명", "").replace(",", "").strip() or "100")
     limit = int(str(payload.get("budget_limit", "2000000")).replace(",", "").replace("원", "").strip() or "2000000")
+
+    # 사용자가 단가·수량을 직접 입력한 경우 우선 사용 (입력값 그대로 반영)
+    lines: list[dict[str, Any]] = payload.get("budget_lines") or []
+    if lines:
+        rows: list[list[str]] = []
+        total = 0
+        for line in lines:
+            name = tighten_text(str(line.get("name") or ""))
+            if not name:
+                continue
+            unit = int(line.get("unit_price") or 0)
+            qty = int(line.get("quantity") or 0)
+            basis = tighten_text(str(line.get("basis") or "")) or f"{unit:,}원×{qty}"
+            amount = unit * qty
+            total += amount
+            rows.append([name, basis, f"{unit:,}", str(qty), f"{amount:,}"])
+        if not rows:
+            rows.append(["-", "-", "0", "0", "0"])
+            total = 0
+        rows.append(["합계", "", "", "", f"{total:,}"])
+        return [[tighten_text(c) for c in row] for row in rows]
+
     items: list[str] = payload.get("budget_items") or []
-    rows: list[list[str]] = []
+    rows = []
     total = 0
     for label in items:
-        name, unit_hint = BUDGET_ITEM_LABELS.get(label, (label, 1))
+        name = BUDGET_ITEM_LABELS.get(label, (label, 1))[0]
         if label == "다과":
             unit, qty, basis = 8000, attendees, f"{attendees}명×{8000:,}원"
         elif label == "홍보물":
@@ -223,14 +245,14 @@ def build_budget_rows(payload: dict[str, Any]) -> list[list[str]]:
             qty = max(1, attendees // 50)
             unit, basis = 50000, f"차량{qty}대×{50000:,}원"
         else:
-            unit, qty, basis = unit_hint, 1, "1식"
+            unit, qty, basis = 100_000, 1, f"{name}1식(추정)"
         amount = unit * qty
         total += amount
         rows.append([name, basis, f"{unit:,}", str(qty), f"{amount:,}"])
 
     if total > limit and total > 0:
         ratio = limit / total
-        scaled: list[list[str]] = []
+        scaled = []
         new_total = 0
         for name, basis, unit_s, qty_s, _ in rows:
             amount = int(int(unit_s.replace(",", "")) * int(qty_s) * ratio)

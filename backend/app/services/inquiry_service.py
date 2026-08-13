@@ -8,6 +8,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import now_kst
 from app.db.models import Inquiry, InquiryActivity
 from app.services.llm_service import get_llm_service
 from app.services.rag_service import (
@@ -70,7 +71,7 @@ def add_activity(db: Session, inquiry: Inquiry, message: str) -> InquiryActivity
     act = InquiryActivity(
         inquiry_id=inquiry.id,
         message=message,
-        created_at=datetime.utcnow(),
+        created_at=now_kst(),
     )
     db.add(act)
     db.flush()  # id·시각을 확정해 이후 로그와 구분
@@ -143,7 +144,7 @@ def generate_inquiry_draft(
     inquiry.references_json = _dumps(refs)
     inquiry.check_notes_json = _dumps(build_check_notes(question, refs))
     inquiry.status = "completed"
-    inquiry.updated_at = datetime.utcnow()
+    inquiry.updated_at = now_kst()
     add_activity(db, inquiry, "AI 답변 초안 생성")
     if refs:
         add_activity(db, inquiry, f"근거 자료 매칭 완료 ({len(refs)}건)")

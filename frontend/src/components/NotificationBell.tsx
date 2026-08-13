@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Bell } from "lucide-react";
+import { formatKstDateTime } from "../lib/datetime";
 
 export type AppNotification = {
   id: string;
@@ -12,9 +13,13 @@ export type AppNotification = {
 type NotificationBellProps = {
   /** 알림 소스. 비우면 빈 목록(배지 숨김). 나중에 API 연동 시 주입. */
   notifications?: AppNotification[];
+  tone?: "default" | "onDark";
 };
 
-export default function NotificationBell({ notifications }: NotificationBellProps) {
+export default function NotificationBell({
+  notifications,
+  tone = "default",
+}: NotificationBellProps) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<AppNotification[]>(notifications ?? []);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -47,8 +52,10 @@ export default function NotificationBell({ notifications }: NotificationBellProp
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`ui-pressable relative rounded-full p-2 text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${
-          open ? "bg-slate-50 text-slate-700" : ""
+        className={`ui-pressable relative rounded-full p-2 ${
+          tone === "onDark"
+            ? `text-white/80 hover:bg-white/10 hover:text-white ${open ? "bg-white/10 text-white" : ""}`
+            : `text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${open ? "bg-slate-50 text-slate-700" : ""}`
         }`}
         aria-label="알림"
         aria-expanded={open}
@@ -64,7 +71,7 @@ export default function NotificationBell({ notifications }: NotificationBellProp
 
       {open && (
         <div
-          className="dropdown-enter absolute right-0 top-[calc(100%+8px)] z-50 w-[320px] overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white shadow-lg"
+          className="dropdown-enter absolute right-0 top-[calc(100%+8px)] z-50 w-[min(320px,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white shadow-lg"
           role="dialog"
           aria-label="알림 목록"
         >
@@ -98,7 +105,7 @@ export default function NotificationBell({ notifications }: NotificationBellProp
                     <p className="mt-0.5 text-[12px] leading-relaxed text-slate-600">{item.body}</p>
                   )}
                   <p className="mt-1 text-[11px] font-medium text-slate-400">
-                    {new Date(item.createdAt).toLocaleString("ko-KR")}
+                    {formatKstDateTime(item.createdAt)}
                   </p>
                 </li>
               ))}

@@ -22,7 +22,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analytics, archive, budget, chat, dashboard, documents, forms, inquiry, plans, staff, workflow
+from app.api.routes import analytics, archive, budget, chat, dashboard, documents, forms, inquiry, plans, review, staff, workflow
 from app.core.config import get_settings
 from app.db.database import init_db
 from app.middleware.rate_limit import RateLimitMiddleware
@@ -84,6 +84,7 @@ app.include_router(workflow.router)
 app.include_router(documents.router)
 app.include_router(forms.router)
 app.include_router(plans.router)
+app.include_router(review.router)
 app.include_router(budget.router)
 app.include_router(staff.router)
 app.include_router(archive.router)

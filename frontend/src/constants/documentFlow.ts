@@ -3,6 +3,16 @@
 export const BRIEFING_FLOW_STEPS = [
   "문서 선택",
   "기본정보 입력",
+  "예산 입력",
+  "계획 생성",
+  "내용 구성",
+  "규정 검토",
+  "완성 및 저장",
+] as const;
+
+export const OUTREACH_FLOW_STEPS = [
+  "문서 선택",
+  "기본정보 입력",
   "계획 생성",
   "내용 구성",
   "규정 검토",
@@ -12,7 +22,7 @@ export const BRIEFING_FLOW_STEPS = [
 export const BUDGET_FLOW_STEPS = [
   "문서 선택",
   "예산 입력",
-  "행정 검토",
+  "내용 점검",
   "규정 검토",
   "예산안 작성",
   "문서 완성",

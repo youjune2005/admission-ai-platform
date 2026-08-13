@@ -4,6 +4,7 @@ from enum import Enum
 from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.timeutil import now_kst
 from app.db.database import Base
 
 
@@ -18,7 +19,7 @@ class ChatSession(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255), default="새 상담")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
     messages: Mapped[list["ChatMessage"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="ChatMessage.created_at"
@@ -32,7 +33,7 @@ class ChatMessage(Base):
     session_id: Mapped[int] = mapped_column(ForeignKey("chat_sessions.id"))
     role: Mapped[str] = mapped_column(String(20))  # "user" | "assistant"
     content: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
 
@@ -45,7 +46,7 @@ class WorkflowTask(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default=TaskStatus.todo.value)
     due_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
 
 class UploadedDocument(Base):
@@ -64,8 +65,8 @@ class UploadedDocument(Base):
     status: Mapped[str] = mapped_column(String(30), default="latest")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     applied_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
     chunks: Mapped[list["DocumentChunk"]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
@@ -104,9 +105,9 @@ class Inquiry(Base):
     selected_document_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     references_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     check_notes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=now_kst, onupdate=now_kst
     )
 
     activities: Mapped[list["InquiryActivity"]] = relationship(
@@ -122,7 +123,7 @@ class InquiryActivity(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     inquiry_id: Mapped[int] = mapped_column(ForeignKey("inquiries.id"), index=True)
     message: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
     inquiry: Mapped["Inquiry"] = relationship(back_populates="activities")
 
@@ -139,9 +140,9 @@ class KpiDailySnapshot(Base):
     draft_completed: Mapped[int] = mapped_column(default=0)
     needs_review: Mapped[int] = mapped_column(default=0)
     regulation_review: Mapped[int] = mapped_column(default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=now_kst, onupdate=now_kst
     )
 
 
@@ -156,9 +157,9 @@ class BriefingPlan(Base):
     status: Mapped[str] = mapped_column(String(30), default="draft")
     pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     preview_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, default=now_kst, onupdate=now_kst
     )
 
 
@@ -169,7 +170,7 @@ class StaffPerson(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
 
 
 class GeneratedDocument(Base):
@@ -199,7 +200,5 @@ class GeneratedDocument(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     archive_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)

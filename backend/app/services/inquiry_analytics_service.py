@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import now_kst
 from app.db.models import Inquiry
 
 # 핵심 키워드 → 유형 (우선순위 높은 순)
@@ -70,7 +71,7 @@ def aggregate_inquiry_topics(
 ) -> dict[str, Any]:
     """최근 N일 입시 문의(Inquiry)를 유형별로 집계합니다."""
     days = max(1, min(days, 90))
-    since = datetime.utcnow() - timedelta(days=days)
+    since = now_kst() - timedelta(days=days)
 
     inquiry_rows = (
         db.query(Inquiry)
@@ -116,6 +117,6 @@ def aggregate_inquiry_topics(
         "days": days,
         "total": total,
         "items": items,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": now_kst().isoformat(),
         "source": "inquiries",
     }

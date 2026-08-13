@@ -1,4 +1,7 @@
-"""간단한 IP 기반 Rate Limit 미들웨어 (단기 공유·비용 방어)."""
+"""간단한 IP 기반 Rate Limit 미들웨어 (단기 공유·비용 방어).
+
+읽기(GET/HEAD/OPTIONS)는 제한하지 않고, 비용·쓰기 요청만 제한합니다.
+"""
 
 from __future__ import annotations
 
@@ -9,9 +12,29 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+# LLM·업로드 등 비용/부하가 큰 경로만 제한
+_LIMITED_PREFIXES = (
+    "/api/inquiry/generate",
+    "/api/inquiry/",  # regenerate, feedback 등
+    "/api/plans/",
+    "/api/budget/",
+    "/api/documents/upload",
+    "/api/documents/ingest",
+    "/api/analytics/",
+    "/api/forms/generate",
+)
+
+
+def _should_limit(method: str, path: str) -> bool:
+    if method in ("GET", "HEAD", "OPTIONS"):
+        return False
+    if path in ("/api/health", "/"):
+        return False
+    return path.startswith("/api/") and any(path.startswith(p) for p in _LIMITED_PREFIXES)
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """IP당 분당 N회. /api 경로에만 적용."""
+    """IP당 분당 N회 — 쓰기/생성 API에만 적용."""
 
     def __init__(self, app, max_requests: int = 60, window_seconds: int = 60):
         super().__init__(app)
@@ -28,11 +51,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return "unknown"
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if self.max_requests <= 0 or not request.url.path.startswith("/api"):
-            return await call_next(request)
-
-        # 헬스체크는 제외
-        if request.url.path in ("/api/health", "/"):
+        if self.max_requests <= 0 or not _should_limit(request.method, request.url.path):
             return await call_next(request)
 
         ip = self._client_ip(request)

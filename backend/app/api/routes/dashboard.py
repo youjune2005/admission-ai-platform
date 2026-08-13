@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import now_kst
 from app.db.database import get_db
 from app.db.models import Inquiry, KpiDailySnapshot, UploadedDocument
 from app.services.archive_service import list_documents
@@ -15,24 +16,19 @@ from app.services.inquiry_analytics_service import aggregate_inquiry_topics, cla
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
-KST = timezone(timedelta(hours=9))
-
 
 def _kst_day_str(offset: int = 0) -> str:
-    now_kst = datetime.now(KST) + timedelta(days=offset)
-    return now_kst.strftime("%Y-%m-%d")
+    now = now_kst() + timedelta(days=offset)
+    return now.strftime("%Y-%m-%d")
 
 
-def _day_bounds_utc(day_offset: int = 0) -> tuple[datetime, datetime]:
-    """KST 기준 day_offset일(0=오늘)의 UTC naive [start, end) 구간."""
-    now_kst = datetime.now(KST)
-    start_kst = (now_kst + timedelta(days=day_offset)).replace(
+def _day_bounds_kst(day_offset: int = 0) -> tuple[datetime, datetime]:
+    """KST 기준 day_offset일(0=오늘)의 naive [start, end) 구간."""
+    start = (now_kst() + timedelta(days=day_offset)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    end_kst = start_kst + timedelta(days=1)
-    start_utc = start_kst.astimezone(timezone.utc).replace(tzinfo=None)
-    end_utc = end_kst.astimezone(timezone.utc).replace(tzinfo=None)
-    return start_utc, end_utc
+    end = start + timedelta(days=1)
+    return start, end
 
 
 def _delta_label(delta: int) -> tuple[str, str]:
@@ -44,7 +40,7 @@ def _delta_label(delta: int) -> tuple[str, str]:
 
 
 def _current_kpi_values(db: Session) -> dict[str, int]:
-    today_start, today_end = _day_bounds_utc(0)
+    today_start, today_end = _day_bounds_kst(0)
 
     today_received = (
         db.query(Inquiry)
@@ -71,7 +67,7 @@ def _current_kpi_values(db: Session) -> dict[str, int]:
 def _upsert_today_snapshot(db: Session, values: dict[str, int]) -> KpiDailySnapshot:
     day = _kst_day_str(0)
     row = db.query(KpiDailySnapshot).filter(KpiDailySnapshot.day == day).first()
-    now = datetime.utcnow()
+    now = now_kst()
     if row is None:
         row = KpiDailySnapshot(day=day, created_at=now, updated_at=now)
         db.add(row)
@@ -86,7 +82,7 @@ def _upsert_today_snapshot(db: Session, values: dict[str, int]) -> KpiDailySnaps
 
 
 def _yesterday_received_count(db: Session) -> int:
-    yday_start, yday_end = _day_bounds_utc(-1)
+    yday_start, yday_end = _day_bounds_kst(-1)
     return (
         db.query(Inquiry)
         .filter(Inquiry.created_at >= yday_start, Inquiry.created_at < yday_end)

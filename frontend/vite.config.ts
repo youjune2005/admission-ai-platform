@@ -8,6 +8,8 @@ export default defineConfig({
     host: true, // 0.0.0.0 — 터널/LAN 접근용
     port: 5173,
     strictPort: true,
+    // Cloudflare Quick Tunnel (*.trycloudflare.com) 공유 허용
+    allowedHosts: [".trycloudflare.com", "localhost", "127.0.0.1"],
     proxy: {
       // 같은 출처로 API를 붙여 공개 URL 1개만으로 공유 가능
       "/api": {

@@ -23,6 +23,7 @@ import {
   todayIso,
   type AdmissionScheduleItem,
 } from "../constants/admissionSchedule";
+import { formatKstDateTimeDash } from "../lib/datetime";
 
 const PAGE_SIZE = 5;
 
@@ -157,14 +158,7 @@ function statusClass(statusKey?: string, label?: string) {
 
 function formatUpdated(value: string | null) {
   if (!value) return "-";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value.slice(0, 10);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${day} ${hh}:${mm}`;
+  return formatKstDateTimeDash(value, value.slice(0, 10));
 }
 
 const FALLBACK_DOCS: RecentDoc[] = [
@@ -194,12 +188,13 @@ const FALLBACK_DOCS: RecentDoc[] = [
   },
 ];
 
-const FALLBACK_FAQ: FaqItem[] = [
-  { label: "수능최저학력기준", count: 28 },
-  { label: "학생부 반영방법", count: 22 },
-  { label: "전형별 지원자격", count: 18 },
-  { label: "제출서류 안내", count: 14 },
-  { label: "면접고사 안내", count: 9 },
+/** 실문의가 없을 때 보여줄 유형 라벨(건수는 0). 가짜 건수를 넣으면 최근 문의와 어긋나 보임. */
+const EMPTY_FAQ: FaqItem[] = [
+  { label: "수능최저학력기준", count: 0 },
+  { label: "학생부 반영방법", count: 0 },
+  { label: "전형별 지원자격", count: 0 },
+  { label: "제출서류 안내", count: 0 },
+  { label: "면접고사 안내", count: 0 },
 ];
 
 function ScheduleTimeline({
@@ -300,7 +295,7 @@ export default function Dashboard() {
   );
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [recentDocs, setRecentDocs] = useState<RecentDoc[]>(FALLBACK_DOCS);
-  const [faqBars, setFaqBars] = useState<FaqItem[]>(FALLBACK_FAQ);
+  const [faqBars, setFaqBars] = useState<FaqItem[]>(EMPTY_FAQ);
   const [faqTotal, setFaqTotal] = useState(0);
   const [faqLive, setFaqLive] = useState(false);
   const [kpiMap, setKpiMap] = useState<Record<string, HomeKpi>>(DEFAULT_KPIS);
@@ -356,12 +351,26 @@ export default function Dashboard() {
           setFaqTotal(faq.total);
           setFaqLive(true);
         } else {
-          setFaqBars(FALLBACK_FAQ);
+          setFaqBars(EMPTY_FAQ);
           setFaqTotal(0);
           setFaqLive(false);
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // 홈 요약 실패 시 FAQ만이라도 별도 조회
+        apiClient
+          .get<{ total: number; items: FaqItem[] }>("/api/dashboard/faq-topics", {
+            params: { days: 7, limit: 6 },
+          })
+          .then((res) => {
+            if (res.data.total > 0 && res.data.items?.length) {
+              setFaqBars(res.data.items.slice(0, 5));
+              setFaqTotal(res.data.total);
+              setFaqLive(true);
+            }
+          })
+          .catch(() => undefined);
+      });
   }, []);
 
   useEffect(() => {
@@ -376,21 +385,21 @@ export default function Dashboard() {
   const maxFaq = Math.max(1, ...faqBars.map((f) => f.count));
 
   return (
-    <div className="mx-auto flex h-full max-w-[1280px] flex-col overflow-hidden px-6 py-4">
+    <div className="mx-auto flex h-full max-w-[1280px] flex-col overflow-hidden px-6 py-4 phone:h-auto phone:overflow-visible phone:px-4 phone:py-4">
       <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="text-[24px] font-bold tracking-tight text-slate-900">
+          <h1 className="text-[24px] font-bold tracking-tight text-slate-900 phone:text-[20px]">
             안녕하세요, 입학팀 담당자님
           </h1>
           <p className="mt-1 text-[13px] text-slate-500">
             오늘의 입시행정 업무 현황을 한눈에 확인하세요.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 phone:w-full">
           <button
             type="button"
             onClick={() => navigate("/inquiry")}
-            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-navy)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-navy-hover)]"
+            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-navy)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-navy-hover)] phone:flex-1 phone:justify-center"
           >
             <MessageSquare className="h-4 w-4" />
             문의 답변 생성
@@ -398,7 +407,7 @@ export default function Dashboard() {
           <button
             type="button"
             onClick={() => navigate("/documents/create")}
-            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-blue)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)]"
+            className="ui-pressable inline-flex items-center gap-2 rounded-lg bg-[var(--ssu-blue)] px-4 py-2.5 text-[13px] font-semibold text-white hover:bg-[var(--ssu-blue-dark)] phone:flex-1 phone:justify-center"
           >
             <FilePenLine className="h-4 w-4" />
             행정문서 작성
@@ -406,25 +415,25 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="mb-4 grid shrink-0 grid-cols-2 gap-3 xl:grid-cols-4">
+      <div className="mb-4 grid shrink-0 grid-cols-2 gap-3 xl:grid-cols-4 phone:gap-2">
         {kpiCards.map((card) => {
           const Icon = card.icon;
           return (
             <div
               key={card.label}
-              className="ui-surface rounded-xl border border-[var(--ssu-border)] bg-white px-4 py-4"
+              className="ui-surface rounded-xl border border-[var(--ssu-border)] bg-white px-4 py-4 phone:px-3 phone:py-3"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[13px] font-medium text-slate-500">{card.label}</p>
-                  <p className="mt-2 text-[28px] font-bold leading-none tracking-tight text-slate-900">
+                  <p className="mt-2 text-[28px] font-bold leading-none tracking-tight text-slate-900 phone:text-[22px]">
                     {card.value}
                     <span className="ml-1 text-[14px] font-semibold text-slate-500">{card.unit}</span>
                   </p>
                   <p className={`mt-2 text-[12px] font-medium ${card.deltaClass}`}>{card.delta}</p>
                 </div>
                 <span
-                  className={`inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl ${card.iconClass}`}
+                  className={`inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl phone:h-9 phone:w-9 ${card.iconClass}`}
                 >
                   <Icon className="h-6 w-6" strokeWidth={2} aria-hidden />
                 </span>
@@ -434,8 +443,8 @@ export default function Dashboard() {
         })}
       </div>
 
-      <div className="mb-2 grid min-h-0 flex-[1.1] grid-cols-1 gap-2 xl:grid-cols-[1.4fr_1fr]">
-        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5">
+      <div className="mb-2 grid min-h-0 flex-[1.1] grid-cols-1 gap-2 xl:grid-cols-[1.4fr_1fr] phone:flex-none">
+        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5 phone:min-h-0 phone:overflow-visible">
           <div className="mb-1.5 flex shrink-0 items-center justify-between">
             <h2 className="text-[13px] font-bold text-slate-900">우선 확인이 필요한 업무</h2>
             <button
@@ -446,11 +455,11 @@ export default function Dashboard() {
               전체 보기 <ChevronRight className="h-3 w-3" />
             </button>
           </div>
-          <ul className="min-h-0 flex-1 space-y-1 overflow-hidden">
+          <ul className="min-h-0 flex-1 space-y-1 overflow-hidden phone:overflow-visible">
             {priorityTasks.map((task) => (
               <li
                 key={task.title}
-                className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-2 py-1.5"
+                className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-2 py-1.5 phone:flex-col phone:items-start"
               >
                 <div className="min-w-0">
                   <span
@@ -465,7 +474,7 @@ export default function Dashboard() {
                 </div>
                 <button
                   type="button"
-                  className={`ui-pressable shrink-0 rounded-md border px-2 py-1 text-[10px] font-semibold ${task.actionClass}`}
+                  className={`ui-pressable shrink-0 rounded-md border px-2 py-1 text-[10px] font-semibold phone:mt-1 ${task.actionClass}`}
                 >
                   {task.action}
                 </button>
@@ -474,7 +483,7 @@ export default function Dashboard() {
           </ul>
         </section>
 
-        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5">
+        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5 phone:overflow-visible">
           <div className="mb-1 flex shrink-0 items-center justify-between">
             <h2 className="text-[13px] font-bold text-slate-900">입시 일정</h2>
             <button
@@ -508,14 +517,14 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <div className="min-h-0 flex-1">
+          <div className="min-h-0 flex-1 phone:h-[210px]">
             <ScheduleTimeline items={pageItems} nearestIso={nearestIso} fill />
           </div>
         </section>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[1.4fr_1fr]">
-        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-2 xl:grid-cols-[1.4fr_1fr] phone:flex-none">
+        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5 phone:overflow-visible">
           <div className="mb-1 flex shrink-0 items-center justify-between">
             <h2 className="text-[13px] font-bold text-slate-900">최근 생성 문서</h2>
             <button
@@ -526,8 +535,8 @@ export default function Dashboard() {
               전체 보기 <ChevronRight className="h-3 w-3" />
             </button>
           </div>
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <table className="w-full text-left text-[11px]">
+          <div className="min-h-0 flex-1 overflow-hidden phone:overflow-x-auto">
+            <table className="w-full text-left text-[11px] phone:min-w-[480px]">
               <thead>
                 <tr className="border-b border-slate-200 text-[10px] text-slate-500">
                   <th className="pb-1 font-medium">문서명</th>
@@ -563,7 +572,7 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5">
+        <section className="ui-surface flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--ssu-border)] bg-white p-2.5 phone:overflow-visible">
           <div className="mb-1 flex shrink-0 items-center justify-between">
             <h2 className="text-[13px] font-bold text-slate-900">자주 들어오는 문의</h2>
             <button
@@ -575,41 +584,47 @@ export default function Dashboard() {
             </button>
           </div>
           <ul className="min-h-0 flex-1 space-y-1.5 overflow-hidden">
-            {faqBars.slice(0, 5).map((item) => (
-              <li key={item.label}>
-                <div className="mb-0.5 flex items-center justify-between text-[11px]">
-                  <span className="font-medium text-slate-700">{item.label}</span>
-                  <span className="font-semibold text-slate-500">{item.count}건</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                  <div
-                    className="h-full rounded-full bg-[var(--ssu-blue)] transition-[width] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
-                    style={{
-                      width: `${item.count === 0 ? 0 : Math.max(8, (item.count / maxFaq) * 100)}%`,
-                    }}
-                  />
-                </div>
+            {faqLive ? (
+              faqBars.slice(0, 5).map((item) => (
+                <li key={item.label}>
+                  <div className="mb-0.5 flex items-center justify-between text-[11px]">
+                    <span className="font-medium text-slate-700">{item.label}</span>
+                    <span className="font-semibold text-slate-500">{item.count}건</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                    <div
+                      className="h-full rounded-full bg-[var(--ssu-blue)] transition-[width] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
+                      style={{
+                        width: `${item.count === 0 ? 0 : Math.max(8, (item.count / maxFaq) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                </li>
+              ))
+            ) : (
+              <li className="flex h-full items-center justify-center text-[12px] text-slate-400">
+                아직 집계할 문의가 없습니다
               </li>
-            ))}
+            )}
           </ul>
           <p className="mt-1 shrink-0 text-[10px] text-slate-400">
             {faqLive
-              ? `최근 7일 문의 ${faqTotal}건 · 입시 문의 답변 연동`
-              : "최근 7일 기준 · 입시 문의 답변 연동 준비됨"}
+              ? `최근 7일 문의 ${faqTotal}건 · 입시 문의 답변과 동일 데이터`
+              : "입시 문의 답변에서 생성되면 여기에 집계됩니다"}
           </p>
         </section>
       </div>
 
       {scheduleOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 soft-fade-in"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4 soft-fade-in phone:items-end phone:px-0"
           role="dialog"
           aria-modal="true"
           aria-labelledby="schedule-modal-title"
           onClick={() => setScheduleOpen(false)}
         >
           <div
-            className="dropdown-enter flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl"
+            className="dropdown-enter flex max-h-[86vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl phone:max-h-[80vh] phone:rounded-b-none"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
