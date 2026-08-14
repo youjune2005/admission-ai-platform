@@ -56,6 +56,8 @@ type UploadProgress = {
   index: number;
   total: number;
   name: string;
+  /** 확장자 판별용 원본 파일명 (자료명과 다를 수 있음) */
+  filename: string;
   phase: UploadPhase;
   ratio: number;
 };
@@ -170,18 +172,24 @@ function UploadProgressBar({ progress, done }: { progress: UploadProgress; done:
   );
 }
 
-function UploadProgressHint({ phase }: { phase: UploadPhase }) {
+const SLOW_UPLOAD_EXTS = new Set([".pdf", ".hwp", ".hwpx"]);
+
+function needsSlowUploadHint(name: string) {
+  const ext = `.${name.split(".").pop()?.toLowerCase() ?? ""}`;
+  return SLOW_UPLOAD_EXTS.has(ext);
+}
+
+function UploadProgressHint({ phase, name }: { phase: UploadPhase; name: string }) {
   // 단계가 바뀔 때 안내문이 사라져 막대가 위로 튀지 않도록 자리는 항상 차지합니다.
+  const visible = phase === "indexing" && needsSlowUploadHint(name);
   return (
     <p
-      aria-hidden={phase !== "indexing"}
+      aria-hidden={!visible}
       className={`mt-1.5 text-[10px] leading-snug text-amber-700/80 transition-opacity duration-300 ${
-        phase === "indexing" ? "opacity-100" : "opacity-0"
+        visible ? "opacity-100" : "opacity-0"
       }`}
     >
-      스캔 PDF는 한국어 OCR → (빈약하면) CLOVA OCR → (그래도 빈약하면) GPT-4o Vision
-      순으로 처리합니다. Vision 단계에서는 분당 토큰 한도에 걸리면 자동 재시도해
-      완료까지 시간이 더 걸릴 수 있습니다.
+      PDF·HWP 파일은 처리에 다소 시간이 걸릴 수 있습니다.
     </p>
   );
 }
@@ -522,7 +530,12 @@ export default function Regulations() {
     );
     if (description.trim()) form.append("description", description.trim());
 
-    const base = { index, total, name: item.title.trim() || item.file.name };
+    const base = {
+      index,
+      total,
+      name: item.title.trim() || item.file.name,
+      filename: item.file.name,
+    };
     setProgress({ ...base, phase: "sending", ratio: 0 });
     // 전송이 매우 빨리 끝나면 onUploadProgress가 indexing으로 안 바뀌는 경우가 있어
     // 요청 직후 인덱싱 단계로 전환할 타이머를 둡니다.
@@ -1303,7 +1316,7 @@ export default function Regulations() {
               <div className="mt-2">
                 <UploadProgressBar progress={progress} done={uploadFinished} />
               </div>
-              <UploadProgressHint phase={progress.phase} />
+              <UploadProgressHint phase={progress.phase} name={progress.filename} />
             </div>
           )}
           <button
@@ -1596,7 +1609,7 @@ export default function Regulations() {
                     </span>
                   </div>
                   <UploadProgressBar progress={progress} done={uploadFinished} />
-                  <UploadProgressHint phase={progress.phase} />
+                  <UploadProgressHint phase={progress.phase} name={progress.filename} />
                 </div>
               )}
             </div>
