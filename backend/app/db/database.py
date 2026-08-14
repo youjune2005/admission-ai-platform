@@ -107,6 +107,9 @@ def init_db() -> None:
     _sqlite_add_column_if_missing(
         "uploaded_documents", "status", "status VARCHAR(30) DEFAULT 'latest'"
     )
+    _sqlite_add_column_if_missing(
+        "uploaded_documents", "prev_status", "prev_status VARCHAR(30)"
+    )
     _sqlite_add_column_if_missing("uploaded_documents", "description", "description TEXT")
     _sqlite_add_column_if_missing("uploaded_documents", "applied_date", "applied_date DATETIME")
     _sqlite_add_column_if_missing("uploaded_documents", "updated_at", "updated_at DATETIME")
@@ -117,6 +120,20 @@ def init_db() -> None:
                 text(
                     "UPDATE inquiries SET ai_draft_answer = draft_answer "
                     "WHERE ai_draft_answer IS NULL AND draft_answer IS NOT NULL"
+                )
+            )
+            # 규정·자료 카테고리: FAQ → 회의록
+            conn.execute(
+                text(
+                    "UPDATE uploaded_documents SET category = '회의록' "
+                    "WHERE category = 'FAQ'"
+                )
+            )
+            # 업로드·인덱싱 실패 건: 업데이트 필요 → 업로드 오류
+            conn.execute(
+                text(
+                    "UPDATE uploaded_documents SET status = 'upload_error' "
+                    "WHERE status = 'needs_update' AND COALESCE(source, '') = 'upload'"
                 )
             )
         _migrate_utc_timestamps_to_kst()

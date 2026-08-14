@@ -28,6 +28,11 @@ API 키가 설정되어 있지 않으면 자동으로 **mock 모드**로 동작�
 
 ### 백엔드
 
+스캔 PDF OCR은 **로컬 OCR → CLOVA(선택) → GPT-4o Vision** 순으로 동작합니다.
+로컬 OCR은 기본적으로 RapidOCR(PP-OCRv4 한국어 모델 + ONNX Runtime)을 쓰며,
+모델은 첫 실행 때 자동으로 내려받습니다. 인텔 맥 기준 페이지당 약 16초로,
+같은 모델을 PaddleOCR로 돌릴 때(약 80초)보다 4~5배 빠릅니다.
+
 ```bash
 cd backend
 python3 -m venv .venv
@@ -35,6 +40,24 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # 필요 시 OPENAI_API_KEY / ANTHROPIC_API_KEY 입력
 uvicorn app.main:app --reload
+```
+
+CLOVA OCR을 쓰려면 `backend/.env`에 네이버 클라우드 General OCR의 Invoke URL / Secret을 넣으세요.
+
+```bash
+CLOVA_OCR_INVOKE_URL=https://....apigw.ntruss.com/.../general
+CLOVA_OCR_SECRET=...
+CLOVA_OCR_ENABLE_TABLE=true
+```
+
+미설정이어도 동작하며, 그때는 로컬 OCR 다음이 바로 GPT Vision입니다.
+
+PaddleOCR로 되돌리려면 `.env`에 `OCR_LOCAL_ENGINE=paddle`을 넣고 Python 3.12 환경을 씁니다
+(Paddle 휠이 3.10–3.12만 지원).
+
+```bash
+./scripts/setup_venv312.sh   # 최초 1회
+./scripts/run_backend.sh
 ```
 
 기본적으로 `http://localhost:8000` 에서 실행되며, API 문서는 `http://localhost:8000/docs` 에서 확인할 수 있습니다.

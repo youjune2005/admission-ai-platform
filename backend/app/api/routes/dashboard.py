@@ -54,7 +54,9 @@ def _current_kpi_values(db: Session) -> dict[str, int]:
     )
     needs_review = db.query(Inquiry).filter(Inquiry.status == "completed").count()
     regulation_review = (
-        db.query(UploadedDocument).filter(UploadedDocument.status == "needs_update").count()
+        db.query(UploadedDocument)
+        .filter(UploadedDocument.status.in_(("needs_update", "upload_error")))
+        .count()
     )
     return {
         "today_received": today_received,

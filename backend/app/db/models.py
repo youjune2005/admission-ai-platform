@@ -61,8 +61,10 @@ class UploadedDocument(Base):
     # 규정·자료 관리 메타
     category: Mapped[str] = mapped_column(String(50), default="기타")
     version: Mapped[str] = mapped_column(String(20), default="V1.0")
-    # latest | needs_update | processing
+    # latest | needs_update | upload_error | processing
     status: Mapped[str] = mapped_column(String(30), default="latest")
+    # processing 중일 때 상단 집계에 쓸 직전 상태. 작업이 끝나면 비웁니다.
+    prev_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     applied_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)

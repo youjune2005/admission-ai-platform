@@ -116,7 +116,7 @@ export default function InquiryPage() {
       <div>
         <h1 className="text-[24px] font-bold text-slate-900 phone:text-[20px]">입시 문의 답변</h1>
         <p className="mt-1 text-[13px] text-slate-500">
-          모집요강·FAQ 근거를 바탕으로 정확한 답변 초안을 생성합니다.
+          모집요강·회의록·재무현황 근거를 바탕으로 정확한 답변 초안을 생성합니다.
         </p>
       </div>
 

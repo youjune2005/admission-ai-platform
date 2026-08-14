@@ -70,3 +70,9 @@ export function formatKstDate(
   const p = partsOf(d);
   return `${p.y}${sep}${p.m}${sep}${p.day}`;
 }
+
+/** 오늘(Asia/Seoul) YYYY-MM-DD */
+export function todayKstDate(): string {
+  const p = partsOf(new Date());
+  return `${p.y}-${p.m}-${p.day}`;
+}

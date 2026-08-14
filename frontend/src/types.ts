@@ -96,7 +96,7 @@ export interface AnalyticsResult {
   ai_insight: string | null;
 }
 
-export type RegulationStatus = "latest" | "needs_update" | "processing";
+export type RegulationStatus = "latest" | "needs_update" | "upload_error" | "processing";
 
 export interface UploadedDocument {
   id: number;
@@ -113,6 +113,8 @@ export interface UploadedDocument {
   updated_at?: string | null;
   created_at: string;
   rag_chunk_count?: number;
+  replaced?: boolean;
+  warning?: string | null;
 }
 
 export interface DocumentListResponse {
@@ -124,6 +126,7 @@ export interface DocumentListResponse {
     total: number;
     latest: number;
     needs_update: number;
+    upload_error?: number;
     processing: number;
   };
   categories: string[];

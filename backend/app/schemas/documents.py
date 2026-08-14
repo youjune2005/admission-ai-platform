@@ -18,6 +18,8 @@ class DocumentOut(BaseModel):
     updated_at: datetime | None = None
     created_at: datetime
     rag_chunk_count: int = 0
+    replaced: bool = False
+    warning: str | None = None
 
     model_config = {"from_attributes": True}
 

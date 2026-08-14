@@ -16,6 +16,7 @@ from app.services.rag_service import ingest_document
 STATUS_LABELS = {
     "latest": "최신 적용",
     "needs_update": "업데이트 필요",
+    "upload_error": "업로드 오류",
     "processing": "처리 중",
 }
 
@@ -141,13 +142,15 @@ def seed_guideline_documents(db: Session) -> dict[str, int]:
                     pass
             created += 1
         else:
-            doc.filename = filename
+            # 파일 위치만 동기화하고 자료명·카테고리·버전·상태는 사용자가 바꾼 값을 유지합니다.
+            if doc.filename in aliases or not doc.filename:
+                doc.filename = filename
             doc.stored_path = str(path.resolve())
             doc.doc_type = _doc_type(filename)
-            doc.source = "data_folder"
-            doc.category = meta["category"]
-            doc.version = meta["version"]
-            doc.status = meta["status"]
+            doc.source = doc.source or "data_folder"
+            doc.category = doc.category or meta["category"]
+            doc.version = doc.version or meta["version"]
+            doc.status = doc.status or meta["status"]
             # 최종 업데이트는 기존값 유지 (없으면 파일 mtime)
             if not doc.updated_at:
                 doc.updated_at = file_dt

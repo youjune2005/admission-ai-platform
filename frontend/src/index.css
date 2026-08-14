@@ -117,6 +117,24 @@ body {
   }
 }
 
+@keyframes progress-sheen {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(220%);
+  }
+}
+
+@keyframes progress-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
 .page-enter {
   animation: page-enter var(--motion-slow) var(--motion-ease) both;
 }
@@ -148,6 +166,63 @@ body {
 
 .soft-fade-in {
   animation: soft-fade-in var(--motion-base) var(--motion-ease) both;
+}
+
+/* —— 업로드 진행률 —— */
+.progress-track {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+  background-color: #e8edf6;
+}
+
+.progress-fill {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background-image: linear-gradient(90deg, var(--ssu-blue), #4d86ff);
+  transition: width 420ms var(--motion-ease);
+}
+
+.progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.55),
+    transparent
+  );
+  animation: progress-sheen 1.5s var(--motion-ease) infinite;
+}
+
+.progress-fill-working {
+  background-image:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.28) 25%,
+      transparent 25%,
+      transparent 50%,
+      rgba(255, 255, 255, 0.28) 50%,
+      rgba(255, 255, 255, 0.28) 75%,
+      transparent 75%
+    ),
+    linear-gradient(90deg, var(--ssu-blue), #4d86ff);
+  background-size:
+    28px 28px,
+    auto;
+  animation: progress-stripes 0.9s linear infinite;
+}
+
+.progress-fill-done {
+  background-image: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.progress-fill-done::after {
+  animation: none;
+  opacity: 0;
 }
 
 .ui-surface {
@@ -206,6 +281,13 @@ textarea {
   .dropdown-enter,
   .soft-fade-in {
     animation: none !important;
+  }
+
+  .progress-fill,
+  .progress-fill::after,
+  .progress-fill-working {
+    animation: none !important;
+    transition: none !important;
   }
 
   .ui-surface,

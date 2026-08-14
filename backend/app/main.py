@@ -48,6 +48,7 @@ if settings.rate_limit_per_minute > 0:
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
+    documents.requeue_interrupted_jobs()
 
 
 @app.get("/")

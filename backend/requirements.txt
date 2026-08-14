@@ -12,3 +12,13 @@ openai
 anthropic
 pypdf
 pymupdf
+numpy
+setuptools
+# 한국어 스캔 PDF OCR 1순위. PaddleOCR과 같은 PP-OCRv4 한국어 모델을
+# ONNX Runtime으로 돌려 CPU에서 4~5배 빠릅니다(모델은 첫 실행 때 자동 내려받음).
+rapidocr>=3
+onnxruntime
+# OCR_LOCAL_ENGINE=paddle 로 되돌릴 때만 필요 (Python 3.10–3.12)
+#   paddlepaddle==2.6.2; platform_system != "Windows" and python_version < "3.13"
+#   paddleocr>=2.7,<3
+# CLOVA는 httpx로 호출 (별도 SDK 없음)
