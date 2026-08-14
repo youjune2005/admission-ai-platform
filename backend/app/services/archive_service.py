@@ -564,5 +564,29 @@ def duplicate_document(db: Session, doc: GeneratedDocument) -> GeneratedDocument
 
 
 def delete_document(db: Session, doc: GeneratedDocument) -> None:
+    """보관함 문서를 지웁니다.
+
+    briefing/budget 등은 BriefingPlan이 원본이라, 문서만 지우면
+    list 조회 시 backfill_from_briefing_plans가 다시 살려 냅니다.
+    연결된 원본 계획도 함께 제거합니다.
+    """
+    paths = [p for p in (doc.pdf_path, doc.preview_path) if p]
+    source_id = doc.source_id
     db.delete(doc)
+
+    if source_id is not None:
+        plan = db.get(BriefingPlan, source_id)
+        if plan is not None:
+            for raw in (plan.pdf_path, plan.preview_path):
+                if raw and raw not in paths:
+                    paths.append(raw)
+            db.delete(plan)
+
     db.commit()
+    for raw in paths:
+        try:
+            path = Path(raw)
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass

@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     upload_dir: str = str(_BACKEND_DIR / "uploads")
 
+    # macOS 한컴오피스 한글 UI 자동화로 HWP→PDF (요금 없음).
+    # 접근성(Accessibility) 권한이 필요하며, 실패 시 LibreOffice/구조보존 폴백으로 이어집니다.
+    # 설정: ./scripts/setup_hancom_hwp_pdf.sh
+    hwp_use_hancom_ui: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

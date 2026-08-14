@@ -123,6 +123,7 @@ def retrieve_relevant_chunks(
     query: str,
     top_k: int | None = None,
     document_ids: list[int] | None = None,
+    exclude_document_ids: list[int] | None = None,
 ) -> list[dict]:
     """질문과 관련된 문서 청크를 유사도 순으로 반환합니다.
     [{"document_id": int, "filename": str, "content": str, "score": float}, ...]
@@ -144,6 +145,8 @@ def retrieve_relevant_chunks(
     )
     if document_ids:
         q = q.filter(UploadedDocument.id.in_(document_ids))
+    if exclude_document_ids:
+        q = q.filter(~UploadedDocument.id.in_(exclude_document_ids))
     rows = q.all()
     if not rows:
         return []

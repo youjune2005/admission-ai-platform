@@ -30,8 +30,10 @@ from app.services.document_service import (
     extract_document,
     summarize_document,
 )
+from app.services.hwp_convert_service import convert_hwp_to_pdf, is_hwp_filename
 from app.services.rag_service import ingest_document
 from app.services.regulation_seed_service import STATUS_LABELS, seed_guideline_documents
+from app.services.title_suggest_service import suggest_document_title
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,16 @@ def requeue_interrupted_jobs() -> None:
         db.close()
 
 
-SUPPORTED_EXTENSIONS = (".pdf", ".txt", ".md", ".docx", ".xlsx", ".xls")
+SUPPORTED_EXTENSIONS = (
+    ".pdf",
+    ".txt",
+    ".md",
+    ".docx",
+    ".xlsx",
+    ".xls",
+    ".hwp",
+    ".hwpx",
+)
 CATEGORIES = ["모집요강", "입학처 공지", "회의록", "재무현황", "예산·행정 규정", "문서 양식"]
 DOC_STATUSES = ("latest", "needs_update", "upload_error", "processing")
 MEDIA_TYPES = {
@@ -110,6 +121,8 @@ MEDIA_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".xls": "application/vnd.ms-excel",
+    ".hwp": "application/x-hwp",
+    ".hwpx": "application/hwp+zip",
 }
 
 
@@ -134,7 +147,29 @@ def _doc_type(filename: str) -> str:
         return "csv"
     if lower.endswith(".docx"):
         return "docx"
+    if lower.endswith((".hwp", ".hwpx")):
+        return "hwp"
     return "text"
+
+
+def _prepare_upload_bytes(original_name: str, content: bytes) -> tuple[str, bytes, str]:
+    """저장할 파일명·바이트·doc_type을 준비합니다. HWP는 PDF로 바꿉니다."""
+    if is_hwp_filename(original_name):
+        try:
+            pdf_bytes = convert_hwp_to_pdf(original_name, content)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("HWP→PDF 변환 실패: %s", original_name)
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"HWP 파일을 PDF로 변환하지 못했습니다: {exc}. "
+                    "macOS에서는 ./scripts/setup_hancom_hwp_pdf.sh 로 한컴 자동화를 "
+                    "켜거나, LibreOffice 설치 후 다시 시도하거나 HWPX/PDF로 올려 주세요."
+                ),
+            ) from exc
+        stored_name = f"{Path(original_name).stem}.pdf"
+        return stored_name, pdf_bytes, "pdf"
+    return original_name, content, _doc_type(original_name)
 
 
 def _chunk_count(db: Session, doc_id: int) -> int:
@@ -430,6 +465,29 @@ def list_documents(
     )
 
 
+class TitleSuggestOut(BaseModel):
+    title: str
+    source: str = "ai"
+
+
+@router.post("/suggest-title", response_model=TitleSuggestOut)
+async def suggest_title(file: UploadFile = File(...)):
+    """업로드 전에 자료명을 빠르게 추천합니다. OCR·인덱싱은 하지 않습니다."""
+    original_name = file.filename or "upload.bin"
+    suffix = Path(original_name).suffix.lower()
+    if suffix and suffix not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 형식입니다. 허용: {', '.join(SUPPORTED_EXTENSIONS)}",
+        )
+    raw = await file.read()
+    # 제목만 뽑을 때는 용량을 제한해 응답 지연을 줄입니다(앞 8MB면 충분).
+    # 단, HWP/HWPX는 OLE/ZIP 중앙 디렉터리가 파일 끝에 있어 자르면 열리지 않습니다.
+    snippet_bytes = raw if is_hwp_filename(original_name) else raw[: 8 * 1024 * 1024]
+    title = suggest_document_title(original_name, snippet_bytes)
+    return TitleSuggestOut(title=title, source="ai")
+
+
 @router.get("/{doc_id}", response_model=DocumentOut)
 def get_document(doc_id: int, db: Session = Depends(get_db)):
     doc = _get_doc(db, doc_id)
@@ -491,20 +549,25 @@ async def upload_document(
             detail=f"지원하지 않는 형식입니다. 허용: {', '.join(SUPPORTED_EXTENSIONS)}",
         )
 
+    raw = await file.read()
+    stored_name, payload, doc_type = _prepare_upload_bytes(original_name, raw)
+
     display_name = _display_name(title, original_name)
+    # HWP는 PDF로 저장하지만 자료명 확장자는 사용자가 준 제목(또는 원본 stem)을 유지합니다.
+    if is_hwp_filename(original_name) and display_name.lower().endswith((".hwp", ".hwpx")):
+        display_name = f"{Path(display_name).stem}.pdf"
     category_value = category or "기타"
     existing = _find_same_name(db, display_name=display_name, category=category_value)
 
-    dest_path = _unique_dest(upload_dir, original_name)
-    with dest_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    dest_path = _unique_dest(upload_dir, stored_name)
+    dest_path.write_bytes(payload)
 
     now = now_kst()
     if existing:
         old_path = existing.stored_path
         existing.filename = display_name
         existing.stored_path = str(dest_path.resolve())
-        existing.doc_type = _doc_type(original_name)
+        existing.doc_type = doc_type
         existing.source = "upload"
         existing.version = _bump_version(existing.version)
         _mark_processing(existing)
@@ -522,7 +585,7 @@ async def upload_document(
     doc = UploadedDocument(
         filename=display_name,
         stored_path=str(dest_path.resolve()),
-        doc_type=_doc_type(original_name),
+        doc_type=doc_type,
         summary=None,
         source="upload",
         category=category_value,
@@ -600,16 +663,21 @@ async def replace_document_file(
             detail=f"지원하지 않는 형식입니다. 허용: {', '.join(SUPPORTED_EXTENSIONS)}",
         )
 
-    dest_path = _unique_dest(upload_dir, original_name)
-    with dest_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+    raw = await file.read()
+    stored_name, payload, doc_type = _prepare_upload_bytes(original_name, raw)
+
+    dest_path = _unique_dest(upload_dir, stored_name)
+    dest_path.write_bytes(payload)
 
     old_path = doc.stored_path
     doc.stored_path = str(dest_path.resolve())
-    doc.doc_type = _doc_type(original_name)
+    doc.doc_type = doc_type
     _mark_processing(doc)
     if title is not None and title.strip():
-        doc.filename = _display_name(title, original_name)
+        display = _display_name(title, original_name)
+        if is_hwp_filename(original_name) and display.lower().endswith((".hwp", ".hwpx")):
+            display = f"{Path(display).stem}.pdf"
+        doc.filename = display
     if version is not None and version.strip():
         doc.version = version.strip()
     else:
@@ -660,9 +728,11 @@ def delete_document(doc_id: int, db: Session = Depends(get_db)):
 
 @router.post("/ingest-data-folder", response_model=IngestResult)
 def ingest_data_folder(db: Session = Depends(get_db)):
-    """data/ 폴더 내 새 문서(PDF, TXT, MD)를 찾아 요약·임베딩까지 자동으로 처리합니다."""
+    """data/ 폴더 내 새 문서를 찾아 변환·요약·임베딩까지 자동으로 처리합니다."""
     settings = get_settings()
     data_dir = Path(settings.data_dir).resolve()
+    upload_dir = Path(settings.upload_dir)
+    upload_dir.mkdir(parents=True, exist_ok=True)
     if not data_dir.exists():
         raise HTTPException(status_code=404, detail=f"데이터 폴더를 찾을 수 없습니다: {data_dir}")
 
@@ -670,6 +740,7 @@ def ingest_data_folder(db: Session = Depends(get_db)):
 
     existing_paths = {doc.stored_path for doc in db.query(UploadedDocument).all()}
     existing_names = {doc.filename for doc in db.query(UploadedDocument).all()}
+    existing_stems = {_norm_stem(doc.filename) for doc in db.query(UploadedDocument).all()}
 
     ingested: list[str] = []
     skipped: list[str] = []
@@ -680,20 +751,35 @@ def ingest_data_folder(db: Session = Depends(get_db)):
             continue
         if path.name.upper() == "README.MD":
             continue
-        if str(path) in existing_paths or path.name in existing_names:
+        if (
+            str(path) in existing_paths
+            or path.name in existing_names
+            or _norm_stem(path.name) in existing_stems
+        ):
             skipped.append(path.name)
             continue
 
         try:
             content = path.read_bytes()
-            extraction, summary = _extract_and_summarize(path.name, content)
+            stored_name, payload, doc_type = _prepare_upload_bytes(path.name, content)
+            stored_path = path.resolve()
+            display_name = path.name
+            # HWP/HWPX도 사용자 업로드와 동일하게 PDF를 저장하고 이후 파이프라인은
+            # 오직 PDF만 다루게 합니다. 원본 data 파일은 그대로 보존합니다.
+            if is_hwp_filename(path.name):
+                converted_path = _unique_dest(upload_dir, stored_name)
+                converted_path.write_bytes(payload)
+                stored_path = converted_path.resolve()
+                display_name = stored_name
+
+            extraction, summary = _extract_and_summarize(stored_name, payload)
             text = extraction.text
 
             now = datetime.fromtimestamp(path.stat().st_mtime)
             doc = UploadedDocument(
-                filename=path.name,
-                stored_path=str(path.resolve()),
-                doc_type=_doc_type(path.name),
+                filename=display_name,
+                stored_path=str(stored_path),
+                doc_type=doc_type,
                 summary=summary,
                 source="data_folder",
                 category="기타",
@@ -722,7 +808,7 @@ def ingest_data_folder(db: Session = Depends(get_db)):
 
             doc.status = _ingest_status(extraction)
             db.commit()
-            ingested.append(path.name)
+            ingested.append(display_name)
         except Exception:  # noqa: BLE001
             db.rollback()
             failed.append(path.name)

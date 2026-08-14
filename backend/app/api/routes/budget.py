@@ -9,6 +9,7 @@ from app.db.models import BriefingPlan, GeneratedDocument
 from app.schemas.archive_meta import ArchiveWriteMixin
 from app.services.archive_service import file_url, resolve_archive_status, upsert_generated_document
 from app.services.budget_plan_service import generate_budget_statement_pdf, review_budget
+from app.services.form_match_service import generate_pdf_preferring_form
 
 router = APIRouter(prefix="/api/budget", tags=["budget"])
 
@@ -91,11 +92,19 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
     db.refresh(plan)
 
     try:
-        files = generate_budget_statement_pdf(
-            items,
+        stem = f"예산안_plan{plan.id}"
+        files, form_match = generate_pdf_preferring_form(
+            db,
+            kind="budget",
             title=payload.title or "예상 예산안",
-            filename_stem=f"예산안_plan{plan.id}",
-            allocated_budget=int(payload.allocated_budget or 0),
+            payload=record_payload,
+            filename_stem=stem,
+            fallback=lambda: generate_budget_statement_pdf(
+                items,
+                title=payload.title or "예상 예산안",
+                filename_stem=stem,
+                allocated_budget=int(payload.allocated_budget or 0),
+            ),
         )
         plan.pdf_path = str(files.pdf_path)
         plan.preview_path = str(files.preview_path)
@@ -136,4 +145,5 @@ def finalize_budget_plan(payload: BudgetFinalizeRequest, db: Session = Depends(g
         "preview_url": file_url(plan.preview_path),
         "archive_id": archived.id,
         "review": review,
+        "form_match": form_match.to_dict() if form_match else None,
     }

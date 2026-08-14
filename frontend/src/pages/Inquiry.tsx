@@ -1,13 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { apiClient } from "../api/client";
 import { formatKstDate, formatKstDateTime } from "../lib/datetime";
-import type { Inquiry, InquiryListResponse, InquiryReferenceDoc } from "../types";
+import type {
+  Inquiry,
+  InquiryListResponse,
+  InquiryReferenceDoc,
+  InquiryReferenceListResponse,
+} from "../types";
 
 const YEARS = ["2027", "2026"];
 const ADMISSION_TYPES = ["수시모집", "정시모집"];
 const SELECTION_TYPES = ["", "학생부종합", "학생부교과", "논술우수자", "실기/실적"];
+const EXCLUDE_STORAGE_KEY = "inquiry.excludedDocs";
+const SEARCH_PAGE_SIZE = 16;
 
 function statusBadge(status: string) {
   if (status === "generating") {
@@ -26,8 +40,12 @@ export default function InquiryPage() {
   const [selectionType, setSelectionType] = useState("");
   const [askerType, setAskerType] = useState<"학생" | "학부모">("학생");
   const [content, setContent] = useState("");
-  const [refs, setRefs] = useState<InquiryReferenceDoc[]>([]);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [excluded, setExcluded] = useState<InquiryReferenceDoc[]>([]);
+  const [usableTotal, setUsableTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<InquiryReferenceDoc[]>([]);
+  const [resultTotal, setResultTotal] = useState(0);
+  const [searching, setSearching] = useState(false);
   const [history, setHistory] = useState<Inquiry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -54,22 +72,46 @@ export default function InquiryPage() {
     }
   };
 
-  const loadRefs = async () => {
+  const searchDocs = useCallback(async (keyword: string) => {
+    setSearching(true);
     try {
-      const res = await apiClient.get<InquiryReferenceDoc[]>("/api/inquiry/references");
-      setRefs(res.data);
-      setSelectedIds(res.data.map((d) => d.id));
+      const res = await apiClient.get<InquiryReferenceListResponse>(
+        "/api/inquiry/references",
+        { params: { q: keyword, page_size: SEARCH_PAGE_SIZE } }
+      );
+      setResults(res.data.items);
+      setResultTotal(res.data.total);
+      setUsableTotal(res.data.usable_total);
       setRefsError(null);
     } catch (err: any) {
-      setRefs([]);
-      setSelectedIds([]);
+      setResults([]);
+      setResultTotal(0);
       setRefsError(err?.response?.data?.detail ?? "규정·자료를 불러오지 못했습니다.");
+    } finally {
+      setSearching(false);
     }
-  };
+  }, []);
+
+  // 저장해 둔 제외 목록은 자료명이 바뀌었을 수 있어 서버 기준으로 다시 맞춥니다.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    const raw = localStorage.getItem(EXCLUDE_STORAGE_KEY);
+    const ids: number[] = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    apiClient
+      .get<InquiryReferenceListResponse>("/api/inquiry/references", {
+        params: { ids: ids.join(",") },
+      })
+      .then((res) => setExcluded(res.data.items))
+      .catch(() => setExcluded([]));
+  }, []);
 
   useEffect(() => {
-    void loadRefs();
-  }, []);
+    const timer = setTimeout(() => void searchDocs(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search, searchDocs]);
 
   useEffect(() => {
     void loadHistory(page);
@@ -79,11 +121,22 @@ export default function InquiryPage() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const charCount = content.length;
 
-  const toggleDoc = (id: number) => {
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const excludedIds = useMemo(() => new Set(excluded.map((d) => d.id)), [excluded]);
+  const usableCount = Math.max(0, usableTotal - excludedIds.size);
+
+  const persistExcluded = (next: InquiryReferenceDoc[]) => {
+    setExcluded(next);
+    localStorage.setItem(EXCLUDE_STORAGE_KEY, JSON.stringify(next.map((d) => d.id)));
   };
 
-  const displayRefs = useMemo(() => refs.slice(0, 8), [refs]);
+  const excludeDoc = (doc: InquiryReferenceDoc) => {
+    if (excludedIds.has(doc.id)) return;
+    persistExcluded([...excluded, doc]);
+  };
+
+  const includeDoc = (id: number) => {
+    persistExcluded(excluded.filter((d) => d.id !== id));
+  };
 
   const handleGenerate = async () => {
     const text = content.trim();
@@ -101,7 +154,7 @@ export default function InquiryPage() {
         admission_type: admissionType,
         selection_type: selectionType,
         asker_type: askerType,
-        document_ids: selectedIds,
+        exclude_document_ids: [...excludedIds],
       });
       navigate(`/inquiry/${res.data.id}`);
     } catch (err: any) {
@@ -220,50 +273,138 @@ export default function InquiryPage() {
 
         {/* 답변 생성 전 확인 */}
         <aside className="ui-surface self-start rounded-xl border border-[var(--ssu-border)] bg-white p-5">
-          <p className="text-[15px] font-bold text-slate-900">답변 생성 전 확인</p>
-          <p className="mt-3 text-[12px] font-semibold text-slate-600">참고 자료</p>
-          <ul className="mt-2 max-h-[420px] space-y-2 overflow-y-auto">
-            {displayRefs.map((doc) => (
-              <li
-                key={doc.id}
-                className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5"
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-[15px] font-bold text-slate-900">답변 생성 전 확인</p>
+            <p className="text-[12px] text-slate-500">
+              근거 <span className="font-bold text-[var(--ssu-blue)]">{usableCount}</span>건 사용
+            </p>
+          </div>
+          <p className="mt-1 text-[12px] text-slate-500">
+            색인된 자료 {usableTotal}건 중 {excludedIds.size}건 제외
+          </p>
+
+          <label className="mt-4 flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 focus-within:border-[var(--ssu-blue)]">
+            <Search className="h-4 w-4 shrink-0 text-slate-400" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="제외할 자료를 검색하세요"
+              className="w-full bg-transparent text-[13px] outline-none placeholder:text-slate-400"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label="검색어 지우기"
               >
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(doc.id)}
-                  onChange={() => toggleDoc(doc.id)}
-                  className="mt-0.5 accent-[var(--ssu-blue)]"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12px] font-medium text-slate-800">{doc.filename}</p>
-                  <p className="mt-0.5 text-[11px] text-slate-400">
-                    {formatKstDate(doc.updated_at ?? doc.created_at, "", ".")}
-                    {doc.category ? ` · ${doc.category}` : ""}
-                  </p>
-                </div>
-              </li>
-            ))}
-            {displayRefs.length === 0 && (
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </label>
+
+          <ul className="mt-2 max-h-[380px] space-y-1.5 overflow-y-auto">
+            {results.map((doc) => {
+              const isExcluded = excludedIds.has(doc.id);
+              return (
+                <li
+                  key={doc.id}
+                  className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[12px] font-medium text-slate-800">
+                      {doc.filename}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-400">
+                      {formatKstDate(doc.updated_at ?? doc.created_at, "", ".")}
+                      {doc.category ? ` · ${doc.category}` : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => (isExcluded ? includeDoc(doc.id) : excludeDoc(doc))}
+                    className={`shrink-0 rounded-md border px-2.5 py-1 text-[11px] font-semibold ${
+                      isExcluded
+                        ? "border-slate-200 bg-white text-slate-500 hover:bg-slate-100"
+                        : "border-red-200 bg-white text-red-600 hover:bg-red-50"
+                    }`}
+                  >
+                    {isExcluded ? "되돌리기" : "제외"}
+                  </button>
+                </li>
+              );
+            })}
+            {results.length === 0 && (
               <li className="rounded-lg bg-slate-50 px-3 py-4 text-center text-[12px] text-slate-400">
                 {refsError ? (
                   <span className="flex flex-col items-center gap-2">
                     <span className="text-red-600">{refsError}</span>
                     <button
                       type="button"
-                      onClick={() => void loadRefs()}
+                      onClick={() => void searchDocs(search.trim())}
                       className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-[12px] font-semibold text-slate-700 hover:bg-slate-100"
                     >
                       다시 시도
                     </button>
                   </span>
+                ) : searching ? (
+                  "불러오는 중…"
+                ) : search.trim() ? (
+                  "검색 결과가 없습니다."
                 ) : (
-                  "등록된 규정·자료가 없습니다."
+                  "색인된 규정·자료가 없습니다."
                 )}
               </li>
             )}
           </ul>
+          {resultTotal > results.length && (
+            <p className="mt-1.5 text-[11px] text-slate-400">
+              {resultTotal}건 중 {results.length}건 표시 — 검색어로 좁혀 보세요.
+            </p>
+          )}
+
+          <div className="mt-4 flex items-baseline justify-between gap-2">
+            <p className="text-[12px] font-semibold text-slate-600">
+              제외한 자료 {excludedIds.size > 0 && `(${excludedIds.size})`}
+            </p>
+            {excludedIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => persistExcluded([])}
+                className="text-[11px] font-semibold text-slate-500 hover:text-slate-800"
+              >
+                모두 해제
+              </button>
+            )}
+          </div>
+          {excluded.length === 0 ? (
+            <p className="mt-1.5 text-[12px] text-slate-400">
+              제외한 자료가 없습니다. 모든 자료를 근거로 사용합니다.
+            </p>
+          ) : (
+            <div className="mt-2 flex max-h-[160px] flex-wrap gap-1.5 overflow-y-auto">
+              {excluded.map((doc) => (
+                <span
+                  key={doc.id}
+                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-red-50 py-1 pl-2.5 pr-1.5 text-[11px] font-medium text-red-700"
+                >
+                  <span className="truncate">{doc.filename}</span>
+                  <button
+                    type="button"
+                    onClick={() => includeDoc(doc.id)}
+                    className="shrink-0 rounded-full p-0.5 hover:bg-red-100"
+                    aria-label={`${doc.filename} 제외 해제`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="mt-4 rounded-lg bg-blue-50 px-3 py-3 text-[12px] leading-relaxed text-blue-800">
-            체크된 자료만 근거로 사용하며, 오래된 자료는 자동으로 제외됩니다.
+            제외 목록에 없는 자료를 모두 근거로 사용합니다. 제외 목록은 이 브라우저에
+            저장되어 다음 문의에도 그대로 적용됩니다.
           </div>
         </aside>
       </div>

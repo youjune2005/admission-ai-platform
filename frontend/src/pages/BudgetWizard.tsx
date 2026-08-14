@@ -113,6 +113,7 @@ export default function BudgetWizard() {
   const [archiveId, setArchiveId] = useState<number | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [formMatchNote, setFormMatchNote] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
   const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
   const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
@@ -351,6 +352,7 @@ export default function BudgetWizard() {
         pdf_url: string | null;
         preview_url: string | null;
         archive_id?: number | null;
+        form_match?: { filename?: string; used_form?: boolean } | null;
       }>("/api/budget/finalize", {
         title,
         allocated_budget: allocated,
@@ -363,6 +365,11 @@ export default function BudgetWizard() {
       setArchiveId(data.archive_id ?? null);
       setPdfUrl(data.pdf_url);
       setPreviewUrl(data.preview_url);
+      setFormMatchNote(
+        data.form_match?.used_form && data.form_match.filename
+          ? `등록된 양식 「${data.form_match.filename}」을 기준으로 작성했습니다.`
+          : null
+      );
       setStep(5);
     } catch (e) {
       setError(e instanceof Error ? e.message : "최종 문서 생성에 실패했습니다.");
@@ -844,6 +851,11 @@ export default function BudgetWizard() {
       {step === 5 && (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
           <section className="rounded-xl border border-[var(--ssu-border)] bg-[#f5f6f8] p-5">
+            {formMatchNote && (
+              <p className="mb-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[12px] text-blue-800">
+                {formMatchNote}
+              </p>
+            )}
             <div className="mx-auto max-w-[720px] overflow-hidden rounded-sm bg-white shadow-sm ring-1 ring-slate-200">
               {previewUrl ? (
                 <img

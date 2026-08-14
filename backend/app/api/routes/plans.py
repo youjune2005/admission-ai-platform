@@ -1,4 +1,5 @@
 import json
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -10,6 +11,8 @@ from app.db.models import BriefingPlan, GeneratedDocument
 from app.schemas.archive_meta import ARCHIVE_WRITE_EXCLUDE, ArchiveWriteMixin
 from app.services.archive_service import file_url, resolve_archive_status, upsert_generated_document
 from app.services.briefing_plan_service import generate_briefing_plan_pdf
+from app.services.form_match_service import generate_pdf_preferring_form
+from app.services.form_pdf_service import TuitionStatementFiles
 from app.services.outreach_plan_service import generate_outreach_plan_pdf
 
 router = APIRouter(prefix="/api/plans", tags=["plans"])
@@ -82,6 +85,8 @@ class BriefingPlanOut(BaseModel):
     preview_url: str | None = None
     payload: dict
     archive_id: int | None = None
+    # RAG에서 고른 양식으로 작성했을 때만 채워집니다.
+    form_match: dict[str, Any] | None = None
 
 
 def _create_plan_record(
@@ -92,7 +97,7 @@ def _create_plan_record(
     owner_names: list[str],
     source_kind: str,
     filename_stem: str,
-    generate,
+    generate: Callable[..., TuitionStatementFiles],
     author: str,
     existing_id: int | None = None,
     archive_status: str | None = None,
@@ -116,8 +121,16 @@ def _create_plan_record(
     except Exception:  # noqa: BLE001
         pass
 
+    stem = f"{filename_stem}_plan{plan.id}"
     try:
-        files = generate(data, filename_stem=f"{filename_stem}_plan{plan.id}")
+        files, form_match = generate_pdf_preferring_form(
+            db,
+            kind=source_kind,
+            title=title,
+            payload=data,
+            filename_stem=stem,
+            fallback=lambda: generate(data, filename_stem=stem),
+        )
         plan.pdf_path = str(files.pdf_path)
         plan.preview_path = str(files.preview_path)
         plan.status = "completed"
@@ -156,6 +169,7 @@ def _create_plan_record(
         preview_url=file_url(plan.preview_path),
         payload=data,
         archive_id=archived.id,
+        form_match=form_match.to_dict() if form_match else None,
     )
 
 

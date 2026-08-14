@@ -29,11 +29,27 @@ import type {
 } from "../types";
 
 const tabs = ["모집요강", "입학처 공지", "회의록", "재무현황", "예산·행정 규정", "문서 양식"] as const;
-const ACCEPT = ".pdf,.docx,.xlsx,.xls,.md,.txt";
-const SUPPORTED = new Set([".pdf", ".docx", ".xlsx", ".xls", ".md", ".txt"]);
+const ACCEPT = ".pdf,.docx,.xlsx,.xls,.md,.txt,.hwp,.hwpx";
+const SUPPORTED = new Set([
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".xls",
+  ".md",
+  ".txt",
+  ".hwp",
+  ".hwpx",
+]);
 const MAX_BYTES = 50 * 1024 * 1024;
 
-type UploadItem = { id: string; file: File; title: string };
+type UploadItem = {
+  id: string;
+  file: File;
+  title: string;
+  /** 사용자가 자료명을 직접 고치면 true — AI 추천으로 덮어쓰지 않습니다. */
+  titleTouched: boolean;
+  titleStatus: "idle" | "loading" | "ready" | "error";
+};
 type MenuState = { docId: number; top: number; left: number } | null;
 type UploadPhase = "sending" | "indexing" | "done";
 type UploadProgress = {
@@ -135,10 +151,34 @@ function TaskRing({
   );
 }
 
-function UploadProgressHint({ phase }: { phase: UploadPhase }) {
-  if (phase !== "indexing") return null;
+/** 두 곳(사이드바·확인 모달)에서 같은 두께·같은 위치로 보이도록 한 군데서 그립니다. */
+function UploadProgressBar({ progress, done }: { progress: UploadProgress; done: boolean }) {
+  const percent = overallPercent(progress);
   return (
-    <p className="mt-1.5 text-[10px] leading-snug text-amber-700/80">
+    <div
+      className="progress-track h-2 w-full"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={percent}
+    >
+      <div
+        className={`progress-fill ${done ? "progress-fill-done" : ""}`}
+        style={{ width: `${Math.max(percent, 4)}%` }}
+      />
+    </div>
+  );
+}
+
+function UploadProgressHint({ phase }: { phase: UploadPhase }) {
+  // 단계가 바뀔 때 안내문이 사라져 막대가 위로 튀지 않도록 자리는 항상 차지합니다.
+  return (
+    <p
+      aria-hidden={phase !== "indexing"}
+      className={`mt-1.5 text-[10px] leading-snug text-amber-700/80 transition-opacity duration-300 ${
+        phase === "indexing" ? "opacity-100" : "opacity-0"
+      }`}
+    >
       스캔 PDF는 한국어 OCR → (빈약하면) CLOVA OCR → (그래도 빈약하면) GPT-4o Vision
       순으로 처리합니다. Vision 단계에서는 분당 토큰 한도에 걸리면 자동 재시도해
       완료까지 시간이 더 걸릴 수 있습니다.
@@ -317,6 +357,7 @@ export default function Regulations() {
   const docs: UploadedDocument[] = data?.items ?? [];
   const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / pageSize));
   const selectedDoc = menu ? docs.find((d) => d.id === menu.docId) ?? null : null;
+  const uploadFinished = !uploading && progress?.phase === "done";
 
   const kpiCards = useMemo(
     () => [
@@ -380,20 +421,66 @@ export default function Regulations() {
         id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 7)}`,
         file,
         title: titleFromFilename(file.name),
+        titleTouched: false,
+        titleStatus: "loading",
       });
     }
     if (next.length) {
       setUploadItems((prev) => [...prev, ...next]);
       setError(null);
+      for (const item of next) {
+        void suggestTitleForItem(item.id, item.file);
+      }
     }
     if (rejected.length) {
-      setError(`일부 파일을 건너뛰었습니다: ${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? " 외" : ""}`);
+      setError(
+        `일부 파일을 건너뛰었습니다: ${rejected.slice(0, 3).join(", ")}${
+          rejected.length > 3 ? " 외" : ""
+        }`,
+      );
     }
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  /** 파일 앞부분만 서버에 보내 문서 제목을 추천받습니다. 사용자가 고친 제목은 덮지 않습니다. */
+  const suggestTitleForItem = async (id: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await apiClient.post<{ title: string }>("/api/documents/suggest-title", form, {
+        timeout: 20_000,
+      });
+      const suggested = (res.data.title || "").trim();
+      if (!suggested) {
+        setUploadItems((prev) =>
+          prev.map((item) =>
+            item.id === id ? { ...item, titleStatus: "error" as const } : item,
+          ),
+        );
+        return;
+      }
+      setUploadItems((prev) =>
+        prev.map((item) => {
+          if (item.id !== id) return item;
+          if (item.titleTouched) return { ...item, titleStatus: "ready" };
+          return { ...item, title: suggested, titleStatus: "ready" };
+        }),
+      );
+    } catch {
+      setUploadItems((prev) =>
+        prev.map((item) =>
+          item.id === id ? { ...item, titleStatus: "error" as const } : item,
+        ),
+      );
+    }
+  };
+
   const updateItemTitle = (id: string, title: string) => {
-    setUploadItems((prev) => prev.map((item) => (item.id === id ? { ...item, title } : item)));
+    setUploadItems((prev) =>
+      prev.map((item) =>
+        item.id === id ? { ...item, title, titleTouched: true, titleStatus: "ready" } : item,
+      ),
+    );
   };
 
   const removeUploadItem = (id: string) => {
@@ -534,11 +621,21 @@ export default function Regulations() {
       }
     } finally {
       setUploading(false);
-      setCategoryConfirmOpen(false);
-      // 완료된 바를 잠깐 보여준 뒤 정리합니다.
+      // 완료 바는 진행 중이던 자리에서 그대로 보여주고,
+      // 확인 모달을 쓴 경우에도 완료를 띄운 뒤에 함께 닫습니다.
       if (progressTimer.current) window.clearTimeout(progressTimer.current);
-      progressTimer.current = window.setTimeout(() => setProgress(null), 900);
+      progressTimer.current = window.setTimeout(() => {
+        setProgress(null);
+        setCategoryConfirmOpen(false);
+      }, 1100);
     }
+  };
+
+  /** 확인 모달을 닫으면서 남아 있는 완료 표시도 같이 정리합니다. */
+  const closeUploadConfirm = () => {
+    if (progressTimer.current) window.clearTimeout(progressTimer.current);
+    setCategoryConfirmOpen(false);
+    setProgress(null);
   };
 
   const handleUploadClick = () => {
@@ -1026,7 +1123,8 @@ export default function Regulations() {
             파일을 드래그하여 놓거나 파일 선택
           </p>
           <p className="mt-1 text-[11px] text-slate-400">여러 개 선택·드래그 가능</p>
-          <p className="text-[11px] text-slate-400">지원 형식: PDF, DOCX, XLSX</p>
+          <p className="text-[11px] text-slate-400">지원 형식: PDF, DOCX, XLSX, HWP, HWPX</p>
+          <p className="text-[11px] text-slate-400">HWP는 업로드 시 PDF로 변환해 인덱싱합니다</p>
           <p className="text-[11px] text-slate-400">최대 용량: 50MB</p>
           {uploadItems.length > 0 && (
             <p className="mt-2 text-[11px] font-medium text-[var(--ssu-blue)]">
@@ -1056,18 +1154,30 @@ export default function Regulations() {
                 placeholder="파일을 선택하면 자동으로 채워집니다"
               />
             ) : uploadItems.length === 1 ? (
-              <input
-                value={uploadItems[0].title}
-                onChange={(e) => updateItemTitle(uploadItems[0].id, e.target.value)}
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-[var(--ssu-blue)]"
-                placeholder="자료명을 입력하세요"
-              />
+              <div>
+                <input
+                  value={uploadItems[0].title}
+                  onChange={(e) => updateItemTitle(uploadItems[0].id, e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 outline-none focus:border-[var(--ssu-blue)]"
+                  placeholder="자료명을 입력하세요"
+                />
+                <p className="mt-1 text-[10px] text-slate-400">
+                  {uploadItems[0].titleStatus === "loading"
+                    ? "문서 제목을 파악하는 중…"
+                    : uploadItems[0].titleTouched
+                      ? "직접 수정한 자료명입니다."
+                      : "본문에서 찾은 제목을 넣었습니다. 필요하면 수정하세요."}
+                </p>
+              </div>
             ) : (
               <div className="max-h-44 space-y-2 overflow-y-auto rounded-lg border border-slate-200 p-2">
                 {uploadItems.map((item) => (
                   <div key={item.id} className="rounded-md bg-slate-50 p-2">
                     <div className="mb-1 flex items-center justify-between gap-2">
-                      <p className="truncate text-[10px] text-slate-400">{item.file.name}</p>
+                      <p className="truncate text-[10px] text-slate-400">
+                        {item.file.name}
+                        {item.titleStatus === "loading" ? " · 제목 파악 중" : ""}
+                      </p>
                       <button
                         type="button"
                         onClick={() => removeUploadItem(item.id)}
@@ -1190,21 +1300,8 @@ export default function Regulations() {
                   {overallPercent(progress)}%
                 </span>
               </div>
-              <div
-                className="progress-track mt-2 h-1.5 w-full"
-                role="progressbar"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={overallPercent(progress)}
-              >
-                <div
-                  className={`progress-fill ${
-                    progress.phase === "indexing" ? "progress-fill-working" : ""
-                  } ${
-                    !uploading && overallPercent(progress) === 100 ? "progress-fill-done" : ""
-                  }`}
-                  style={{ width: `${Math.max(overallPercent(progress), 4)}%` }}
-                />
+              <div className="mt-2">
+                <UploadProgressBar progress={progress} done={uploadFinished} />
               </div>
               <UploadProgressHint phase={progress.phase} />
             </div>
@@ -1419,35 +1516,71 @@ export default function Regulations() {
         createPortal(
           <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-slate-900/40 p-4">
             <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
-              <p className="text-[15px] font-bold text-slate-900">카테고리 확인</p>
-              <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
-                선택한 <span className="font-semibold text-slate-900">{uploadItems.length}개</span> 파일을
-                모두{" "}
-                <span className="font-semibold text-[var(--ssu-blue)]">「{uploadCategory}」</span>
-                카테고리로 업로드할까요?
+              <p className="text-[15px] font-bold text-slate-900">
+                {uploadFinished ? "업로드 완료" : "카테고리 확인"}
               </p>
-              <p className="mt-2 text-[12px] text-slate-500">
-                버전({version || "V1.0"})과 적용일자(
-                {/^\d{4}-\d{2}-\d{2}$/.test(appliedDate) ? appliedDate : todayKstDate()})는 모든
-                파일에 동일하게 적용됩니다.
-              </p>
+              {/* 확인 → 완료로 바뀔 때 창 높이가 변해 막대가 튀지 않도록 자리를 맞춥니다. */}
+              <div className="mt-2 min-h-[84px]">
+                {uploadFinished ? (
+                  <>
+                    <p className="text-[13px] leading-relaxed text-slate-600">
+                      <span className="font-semibold text-[var(--ssu-blue)]">
+                        「{uploadCategory}」
+                      </span>
+                      카테고리에 {progress?.total ?? 0}개 파일 처리를 마쳤습니다.
+                    </p>
+                    <p className="mt-2 text-[12px] text-slate-500">
+                      결과와 실패 건은 목록 위 알림에서 확인할 수 있습니다.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[13px] leading-relaxed text-slate-600">
+                      선택한{" "}
+                      <span className="font-semibold text-slate-900">{uploadItems.length}개</span>{" "}
+                      파일을 모두{" "}
+                      <span className="font-semibold text-[var(--ssu-blue)]">
+                        「{uploadCategory}」
+                      </span>
+                      카테고리로 업로드할까요?
+                    </p>
+                    <p className="mt-2 text-[12px] text-slate-500">
+                      버전({version || "V1.0"})과 적용일자(
+                      {/^\d{4}-\d{2}-\d{2}$/.test(appliedDate) ? appliedDate : todayKstDate()})는
+                      모든 파일에 동일하게 적용됩니다.
+                    </p>
+                  </>
+                )}
+              </div>
               <div className="mt-5 flex justify-end gap-2">
-                <button
-                  type="button"
-                  disabled={uploading}
-                  onClick={() => setCategoryConfirmOpen(false)}
-                  className="rounded-lg border border-slate-200 px-4 py-2 text-[13px] font-semibold text-slate-600"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  disabled={uploading}
-                  onClick={() => void runUpload()}
-                  className="rounded-lg bg-[var(--ssu-blue)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
-                >
-                  {uploading ? "업로드 중…" : "맞습니다, 업로드"}
-                </button>
+                {uploadFinished ? (
+                  <button
+                    type="button"
+                    onClick={closeUploadConfirm}
+                    className="rounded-lg bg-[var(--ssu-blue)] px-4 py-2 text-[13px] font-semibold text-white"
+                  >
+                    닫기
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      disabled={uploading}
+                      onClick={closeUploadConfirm}
+                      className="rounded-lg border border-slate-200 px-4 py-2 text-[13px] font-semibold text-slate-600"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="button"
+                      disabled={uploading}
+                      onClick={() => void runUpload()}
+                      className="rounded-lg bg-[var(--ssu-blue)] px-4 py-2 text-[13px] font-semibold text-white disabled:opacity-50"
+                    >
+                      {uploading ? "업로드 중…" : "맞습니다, 업로드"}
+                    </button>
+                  </>
+                )}
               </div>
               {progress && (
                 <div className="soft-fade-in mt-4">
@@ -1462,24 +1595,7 @@ export default function Regulations() {
                       {overallPercent(progress)}%
                     </span>
                   </div>
-                  <div
-                    className="progress-track h-1.5 w-full"
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={overallPercent(progress)}
-                  >
-                    <div
-                      className={`progress-fill ${
-                        progress.phase === "indexing" ? "progress-fill-working" : ""
-                      } ${
-                        !uploading && overallPercent(progress) === 100
-                          ? "progress-fill-done"
-                          : ""
-                      }`}
-                      style={{ width: `${Math.max(overallPercent(progress), 4)}%` }}
-                    />
-                  </div>
+                  <UploadProgressBar progress={progress} done={uploadFinished} />
                   <UploadProgressHint phase={progress.phase} />
                 </div>
               )}

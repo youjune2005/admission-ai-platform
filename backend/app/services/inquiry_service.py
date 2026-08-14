@@ -95,6 +95,7 @@ def generate_inquiry_draft(
     inquiry: Inquiry,
     *,
     document_ids: list[int] | None = None,
+    exclude_document_ids: list[int] | None = None,
 ) -> Inquiry:
     """RAG + LLM으로 초안을 생성하고 inquiry에 저장합니다."""
     inquiry.status = "generating"
@@ -110,12 +111,17 @@ def generate_inquiry_draft(
     query = f"{meta}\n{question}"
 
     ids = document_ids if document_ids else _loads(inquiry.selected_document_ids_json, [])
+    if exclude_document_ids is None:
+        exclude_ids = _loads(getattr(inquiry, "excluded_document_ids_json", None), [])
+    else:
+        exclude_ids = exclude_document_ids
     # 청크를 넉넉히 가져와 문서 단위로 묶음
     chunks = retrieve_relevant_chunks(
         db,
         query,
         top_k=12,
         document_ids=ids or None,
+        exclude_document_ids=exclude_ids or None,
     )
     refs = aggregate_document_references(chunks, limit=5)
     context = build_context_block(chunks[:8])
@@ -146,6 +152,8 @@ def generate_inquiry_draft(
     inquiry.status = "completed"
     inquiry.updated_at = now_kst()
     add_activity(db, inquiry, "AI 답변 초안 생성")
+    if exclude_ids:
+        add_activity(db, inquiry, f"제외한 자료 {len(exclude_ids)}건 반영")
     if refs:
         add_activity(db, inquiry, f"근거 자료 매칭 완료 ({len(refs)}건)")
     else:
@@ -252,6 +260,9 @@ def inquiry_to_dict(inquiry: Inquiry) -> dict:
         "status": inquiry.status,
         "status_label": STATUS_LABELS.get(inquiry.status, inquiry.status),
         "selected_document_ids": _loads(inquiry.selected_document_ids_json, []),
+        "excluded_document_ids": _loads(
+            getattr(inquiry, "excluded_document_ids_json", None), []
+        ),
         "references": references,
         "check_notes": _loads(inquiry.check_notes_json, []),
         "activities": activities,

@@ -96,6 +96,43 @@ def _migrate_utc_timestamps_to_kst() -> None:
         )
 
 
+def _repair_false_upload_errors() -> None:
+    """청크가 남아 있는데 upload_error로 굳어 버린 문서를 한 번만 되돌립니다.
+
+    이전 버전은 기동할 때마다 needs_update 업로드를 upload_error로 덮어써서,
+    OCR 품질만 낮았을 뿐 정상 인덱싱된 자료까지 오류로 표시됐습니다.
+    """
+    if not settings.database_url.startswith("sqlite"):
+        return
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS app_meta ("
+                "key VARCHAR(64) PRIMARY KEY, value TEXT)"
+            )
+        )
+        row = conn.execute(
+            text("SELECT value FROM app_meta WHERE key = 'upload_error_repair'")
+        ).fetchone()
+        if row and row[0] == "done":
+            return
+
+        conn.execute(
+            text(
+                "UPDATE uploaded_documents SET status = 'needs_update' "
+                "WHERE status = 'upload_error' AND id IN ("
+                "SELECT DISTINCT document_id FROM document_chunks)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO app_meta(key, value) VALUES ('upload_error_repair', 'done') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+        )
+
+
 def init_db() -> None:
     from app.db import models  # noqa: F401  (ensure models are registered)
 
@@ -114,6 +151,9 @@ def init_db() -> None:
     _sqlite_add_column_if_missing("uploaded_documents", "applied_date", "applied_date DATETIME")
     _sqlite_add_column_if_missing("uploaded_documents", "updated_at", "updated_at DATETIME")
     _sqlite_add_column_if_missing("inquiries", "ai_draft_answer", "ai_draft_answer TEXT")
+    _sqlite_add_column_if_missing(
+        "inquiries", "excluded_document_ids_json", "excluded_document_ids_json TEXT"
+    )
     if settings.database_url.startswith("sqlite"):
         with engine.begin() as conn:
             conn.execute(
@@ -129,14 +169,8 @@ def init_db() -> None:
                     "WHERE category = 'FAQ'"
                 )
             )
-            # 업로드·인덱싱 실패 건: 업데이트 필요 → 업로드 오류
-            conn.execute(
-                text(
-                    "UPDATE uploaded_documents SET status = 'upload_error' "
-                    "WHERE status = 'needs_update' AND COALESCE(source, '') = 'upload'"
-                )
-            )
         _migrate_utc_timestamps_to_kst()
+        _repair_false_upload_errors()
 
     # data/guidelines 시드
     from app.services.archive_service import dedupe_generated_documents

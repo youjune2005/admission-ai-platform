@@ -105,6 +105,8 @@ class Inquiry(Base):
     # pending | generating | completed | reviewed
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     selected_document_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 근거에서 뺄 문서 id. 자료가 많아질수록 포함 목록보다 제외 목록이 관리하기 쉽습니다.
+    excluded_document_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     references_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     check_notes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_kst)

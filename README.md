@@ -52,6 +52,23 @@ CLOVA_OCR_ENABLE_TABLE=true
 
 미설정이어도 동작하며, 그때는 로컬 OCR 다음이 바로 GPT Vision입니다.
 
+HWP/HWPX 업로드는 서버에서 PDF로 바꾼 뒤 위와 같은 파이프라인으로 인덱싱합니다.
+
+**변환 우선순위 (추가 요금 없음)**
+
+1. **한컴오피스 한글 UI 자동화** (macOS, 선택) — 설치된 한글 앱의 인쇄→PDF 저장을
+   조작합니다. 원본에 가장 가깝습니다. 한 번만 접근성(Accessibility) 권한을 주면 됩니다.
+   ```bash
+   ./scripts/setup_hancom_hwp_pdf.sh [/path/to/sample.hwp]
+   # backend/.env 에 HWP_USE_HANCOM_UI=true 가 들어갑니다. 서버를 재시작하세요.
+   ```
+   GUI 세션이 있는 Mac에서만 동작합니다(헤드리스 서버·SSH 전용은 불가).
+2. **LibreOffice** (`brew install --cask libreoffice`) 직접 변환.
+3. 구조 보존 폴백 — HWP는 pyhwp HTML, HWPX는 표·이미지 HTML → 다시 PDF.
+4. 본문 텍스트만 뽑은 검색용 PDF.
+
+한컴 경로가 실패해도(권한·UI 변경 등) 2→3→4로 자동 폴백합니다.
+
 PaddleOCR로 되돌리려면 `.env`에 `OCR_LOCAL_ENGINE=paddle`을 넣고 Python 3.12 환경을 씁니다
 (Paddle 휠이 3.10–3.12만 지원).
 

@@ -126,15 +126,6 @@ body {
   }
 }
 
-@keyframes progress-stripes {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: 28px 0;
-  }
-}
-
 .page-enter {
   animation: page-enter var(--motion-slow) var(--motion-ease) both;
 }
@@ -181,8 +172,11 @@ body {
   height: 100%;
   overflow: hidden;
   border-radius: 999px;
-  background-image: linear-gradient(90deg, var(--ssu-blue), #4d86ff);
-  transition: width 420ms var(--motion-ease);
+  /* 단색이라야 진행(파랑) → 완료(초록) 색이 부드럽게 넘어갑니다. */
+  background-color: var(--ssu-blue);
+  transition:
+    width 420ms var(--motion-ease),
+    background-color 320ms var(--motion-ease);
 }
 
 .progress-fill::after {
@@ -192,32 +186,15 @@ body {
   background-image: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.55),
+    rgba(255, 255, 255, 0.45),
     transparent
   );
   animation: progress-sheen 1.5s var(--motion-ease) infinite;
-}
-
-.progress-fill-working {
-  background-image:
-    linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.28) 25%,
-      transparent 25%,
-      transparent 50%,
-      rgba(255, 255, 255, 0.28) 50%,
-      rgba(255, 255, 255, 0.28) 75%,
-      transparent 75%
-    ),
-    linear-gradient(90deg, var(--ssu-blue), #4d86ff);
-  background-size:
-    28px 28px,
-    auto;
-  animation: progress-stripes 0.9s linear infinite;
+  transition: opacity 320ms var(--motion-ease);
 }
 
 .progress-fill-done {
-  background-image: linear-gradient(90deg, #10b981, #34d399);
+  background-color: #10b981;
 }
 
 .progress-fill-done::after {
@@ -284,8 +261,7 @@ textarea {
   }
 
   .progress-fill,
-  .progress-fill::after,
-  .progress-fill-working {
+  .progress-fill::after {
     animation: none !important;
     transition: none !important;
   }

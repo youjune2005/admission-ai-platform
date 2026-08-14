@@ -150,6 +150,7 @@ export default function DocumentWizard() {
   const [archiveId, setArchiveId] = useState<number | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [formMatchNote, setFormMatchNote] = useState<string | null>(null);
   const [savingArchive, setSavingArchive] = useState(false);
   const [pausedPhase, setPausedPhase] = useState<null | "content" | "regulation">(null);
   const [contentReview, setContentReview] = useState<ContentReviewResult | null>(null);
@@ -355,6 +356,7 @@ export default function DocumentWizard() {
       preview_url: string | null;
       title: string;
       archive_id?: number | null;
+      form_match?: { filename?: string; used_form?: boolean; relevance?: number } | null;
     }>("/api/plans/briefing", {
       ...payload,
       archive_status: "draft",
@@ -364,6 +366,11 @@ export default function DocumentWizard() {
     setArchiveId(nextArchiveId);
     setPdfUrl(data.pdf_url);
     setPreviewUrl(data.preview_url);
+    setFormMatchNote(
+      data.form_match?.used_form && data.form_match.filename
+        ? `등록된 양식 「${data.form_match.filename}」을 기준으로 작성했습니다.`
+        : null
+    );
     await loadStaff();
     return nextArchiveId;
   };
@@ -1013,6 +1020,11 @@ export default function DocumentWizard() {
       {step === 6 && (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-[1fr_280px]">
           <section className="rounded-xl border border-[var(--ssu-border)] bg-[#f5f6f8] p-5">
+            {formMatchNote && (
+              <p className="mb-3 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-[12px] text-blue-800">
+                {formMatchNote}
+              </p>
+            )}
             <div className="mx-auto max-w-[720px] rounded-sm bg-white px-10 py-10 shadow-sm ring-1 ring-slate-200">
               {previewUrl ? (
                 <img

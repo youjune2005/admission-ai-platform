@@ -46,6 +46,7 @@ export interface Inquiry {
   status: InquiryStatus | string;
   status_label: string;
   selected_document_ids: number[];
+  excluded_document_ids: number[];
   references: InquiryReference[];
   check_notes: string[];
   activities: InquiryActivity[];
@@ -64,8 +65,19 @@ export interface InquiryReferenceDoc {
   id: number;
   filename: string;
   category: string;
+  status: RegulationStatus | string;
+  status_label: string;
   updated_at?: string | null;
   created_at?: string | null;
+}
+
+export interface InquiryReferenceListResponse {
+  items: InquiryReferenceDoc[];
+  total: number;
+  /** 색인이 끝나 근거로 쓸 수 있는 전체 자료 수 */
+  usable_total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface WorkflowTask {

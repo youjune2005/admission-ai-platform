@@ -14,10 +14,18 @@ pypdf
 pymupdf
 numpy
 setuptools
+olefile
+pyhwp
+# HWPX의 문단·표·이미지를 보존하는 구조화 변환 폴백
+airun-hwp>=0.3.1
+markdown>=3.5
 # 한국어 스캔 PDF OCR 1순위. PaddleOCR과 같은 PP-OCRv4 한국어 모델을
 # ONNX Runtime으로 돌려 CPU에서 4~5배 빠릅니다(모델은 첫 실행 때 자동 내려받음).
 rapidocr>=3
 onnxruntime
+# HWP→PDF 서식 유지 변환에는 LibreOffice(soffice)가 필요합니다.
+# macOS: brew install --cask libreoffice
+# 변환 순서: LibreOffice 직접 → pyhwp/airun 구조 보존 → 텍스트 PDF
 # OCR_LOCAL_ENGINE=paddle 로 되돌릴 때만 필요 (Python 3.10–3.12)
 #   paddlepaddle==2.6.2; platform_system != "Windows" and python_version < "3.13"
 #   paddleocr>=2.7,<3

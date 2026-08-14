@@ -11,6 +11,7 @@ import {
   FilePenLine,
   Plus,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import { API_BASE_URL, apiClient } from "../api/client";
@@ -272,6 +273,31 @@ export default function Archive() {
     try {
       await apiClient.patch(`/api/archive/${doc.id}/status`, { status: "archived" });
       await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteDoc = async (doc: GeneratedDocument) => {
+    if (!window.confirm(`「${doc.title}」을(를) 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiClient.delete(`/api/archive/${doc.id}`);
+      setSelectedIds((prev) => {
+        if (!prev.has(doc.id)) return prev;
+        const next = new Set(prev);
+        next.delete(doc.id);
+        return next;
+      });
+      setSelectedId(null);
+      setPreviewOpen(false);
+      await load();
+    } catch (e) {
+      setLoadError(
+        e instanceof Error ? e.message : "문서를 삭제하지 못했습니다."
+      );
     } finally {
       setBusy(false);
     }
@@ -784,6 +810,15 @@ export default function Archive() {
                 보관 완료로 변경
               </button>
             )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void deleteDoc(selected)}
+              className="ui-pressable flex w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-3 py-2.5 text-[13px] font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              <Trash2 className="h-4 w-4" />
+              삭제
+            </button>
           </div>
         </aside>
         </>

@@ -1,11 +1,12 @@
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.timeutil import now_kst
 from app.db.database import get_db
-from app.db.models import Inquiry, UploadedDocument
+from app.db.models import DocumentChunk, Inquiry, UploadedDocument
 from app.schemas.inquiry import (
     InquiryCreateRequest,
     InquiryFeedbackOut,
@@ -13,8 +14,10 @@ from app.schemas.inquiry import (
     InquiryListResponse,
     InquiryOut,
     InquiryUpdateRequest,
+    ReferenceDocListResponse,
     ReferenceDocOut,
 )
+from app.services.regulation_seed_service import STATUS_LABELS as DOC_STATUS_LABELS
 from app.services.inquiry_service import (
     add_activity,
     generate_draft_feedback,
@@ -30,24 +33,92 @@ def _out(inquiry: Inquiry) -> InquiryOut:
     return InquiryOut(**inquiry_to_dict(inquiry))
 
 
-@router.get("/references", response_model=list[ReferenceDocOut])
-def list_reference_docs(db: Session = Depends(get_db)):
-    """답변 생성 전 확인용 규정·자료 목록."""
+def _ref_out(doc: UploadedDocument) -> ReferenceDocOut:
+    status = getattr(doc, "status", None) or "latest"
+    return ReferenceDocOut(
+        id=doc.id,
+        filename=doc.filename,
+        category=getattr(doc, "category", None) or "기타",
+        status=status,
+        status_label=DOC_STATUS_LABELS.get(status, status),
+        updated_at=getattr(doc, "updated_at", None) or doc.created_at,
+        created_at=doc.created_at,
+    )
+
+
+def _indexed_docs_query(db: Session):
+    """근거로 쓸 수 있는(청크가 실제로 색인된) 자료만 추립니다."""
+    return db.query(UploadedDocument).filter(
+        UploadedDocument.id.in_(db.query(DocumentChunk.document_id).distinct())
+    )
+
+
+@router.get("/references", response_model=ReferenceDocListResponse)
+def list_reference_docs(
+    q: str = Query("", max_length=100, description="자료명·분류 검색어"),
+    ids: str = Query("", description="쉼표로 구분한 문서 id. 제외 목록 복원용"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """답변 생성 전 확인용 규정·자료 검색.
+
+    `ids`를 주면 검색어·페이지를 무시하고 해당 문서만 돌려줍니다.
+    """
+    usable_total = _indexed_docs_query(db).count()
+
+    if ids.strip():
+        wanted = [int(v) for v in ids.split(",") if v.strip().lstrip("-").isdigit()]
+        if not wanted:
+            return ReferenceDocListResponse(usable_total=usable_total, page=1, page_size=page_size)
+        rows = (
+            db.query(UploadedDocument)
+            .filter(UploadedDocument.id.in_(wanted))
+            .order_by(UploadedDocument.filename.asc())
+            .all()
+        )
+        return ReferenceDocListResponse(
+            items=[_ref_out(d) for d in rows],
+            total=len(rows),
+            usable_total=usable_total,
+            page=1,
+            page_size=page_size,
+        )
+
+    query = _indexed_docs_query(db)
+    keyword = q.strip()
+    if keyword:
+        like = f"%{keyword}%"
+        query = query.filter(
+            or_(
+                UploadedDocument.filename.ilike(like),
+                UploadedDocument.category.ilike(like),
+            )
+        )
+
+    total = query.count()
+    # 예산·행정 규정을 위쪽에 두고, 같은 분류 안에서는 최신순
+    category_rank = case(
+        (UploadedDocument.category == "예산·행정 규정", 0),
+        else_=1,
+    )
     rows = (
-        db.query(UploadedDocument)
-        .order_by(UploadedDocument.updated_at.desc(), UploadedDocument.created_at.desc())
+        query.order_by(
+            category_rank.asc(),
+            UploadedDocument.updated_at.desc(),
+            UploadedDocument.created_at.desc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
-    return [
-        ReferenceDocOut(
-            id=d.id,
-            filename=d.filename,
-            category=getattr(d, "category", None) or "기타",
-            updated_at=getattr(d, "updated_at", None) or d.created_at,
-            created_at=d.created_at,
-        )
-        for d in rows
-    ]
+    return ReferenceDocListResponse(
+        items=[_ref_out(d) for d in rows],
+        total=total,
+        usable_total=usable_total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("", response_model=InquiryListResponse)
@@ -103,6 +174,9 @@ def generate_inquiry(payload: InquiryCreateRequest, db: Session = Depends(get_db
         masked_content=masked,
         status="pending",
         selected_document_ids_json=json.dumps(payload.document_ids or [], ensure_ascii=False),
+        excluded_document_ids_json=json.dumps(
+            payload.exclude_document_ids or [], ensure_ascii=False
+        ),
         created_at=now_kst(),
         updated_at=now_kst(),
     )
@@ -113,7 +187,12 @@ def generate_inquiry(payload: InquiryCreateRequest, db: Session = Depends(get_db
     db.commit()
 
     try:
-        inquiry = generate_inquiry_draft(db, inquiry, document_ids=payload.document_ids or None)
+        inquiry = generate_inquiry_draft(
+            db,
+            inquiry,
+            document_ids=payload.document_ids or None,
+            exclude_document_ids=payload.exclude_document_ids or None,
+        )
     except Exception as exc:  # noqa: BLE001
         inquiry.status = "pending"
         add_activity(db, inquiry, f"답변 생성 실패: {exc}")
