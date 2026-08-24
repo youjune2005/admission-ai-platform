@@ -54,7 +54,8 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
           <div>
             <p className="text-[16px] font-bold text-slate-900">규정 검토 결과</p>
             <p className="mt-1 text-[13px] text-slate-500">
-              문서 구절과 규정 원문을 그대로 대조했습니다. 요약이 아니라 해당 문장 때문에 맞는지 표시합니다.
+              규정과 명백히 충돌하면 「규정에 맞지 않음」, 그 외 확인이 필요하면 대부분
+              「검토 필요」로 표시합니다.
             </p>
           </div>
           <div className="flex gap-2">
@@ -72,6 +73,7 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
         <div className="mt-4 space-y-3">
           {result.findings.map((finding, idx) => {
             const violation = finding.status === "violation";
+            const reason = (finding.reason || "").trim();
             const note =
               finding.mismatch_note ||
               finding.explanation ||
@@ -94,9 +96,20 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
                   <p className="text-[12px] font-semibold text-slate-700">{finding.location}</p>
                 </div>
 
-                <p className="mt-2 text-[14px] font-semibold leading-relaxed text-slate-900">
-                  {note}
-                </p>
+                {!violation && reason && (
+                  <div className="mt-3 rounded-lg border border-orange-200 bg-white px-3 py-2.5">
+                    <p className="text-[11px] font-semibold text-orange-700">검토가 필요한 이유</p>
+                    <p className="mt-1 text-[13px] font-semibold leading-relaxed text-slate-900">
+                      {reason}
+                    </p>
+                  </div>
+                )}
+
+                {(violation || !reason) && (
+                  <p className="mt-2 text-[14px] font-semibold leading-relaxed text-slate-900">
+                    {note}
+                  </p>
+                )}
 
                 {finding.document_excerpt && (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
@@ -122,11 +135,11 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
                         「{finding.regulation_excerpt}」
                       </p>
                     )}
-                    <p className="mt-2 text-[12px] font-semibold text-slate-700">
-                      {violation
-                        ? "위 규정 문장 때문에 이 문서 기재가 규정에 맞지 않습니다."
-                        : "위 규정 문장과 이 문서 기재를 대조해 검토가 필요합니다."}
-                    </p>
+                    {violation && (
+                      <p className="mt-2 text-[12px] font-semibold text-slate-700">
+                        위 규정 문장 때문에 이 문서 기재가 규정에 맞지 않습니다.
+                      </p>
+                    )}
                   </div>
                 )}
               </article>
@@ -134,7 +147,7 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
           })}
           {result.findings.length === 0 && (
             <p className="rounded-lg bg-emerald-50 px-4 py-6 text-center text-[13px] text-emerald-700">
-              대조한 규정 원문과 모순되는 내용은 없습니다.
+              대조한 규정 원문과 모순되거나, 별도 검토가 필요한 사유는 없습니다.
             </p>
           )}
         </div>
@@ -163,7 +176,7 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
         <section className="rounded-xl border border-[var(--ssu-border)] bg-white p-4 shadow-sm">
           <p className="text-[13px] font-bold text-slate-900">근거 자료</p>
           <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-            관련도가 높을수록 색이 진합니다. 제목 아래는 규정에 맞지 않거나 검토가 필요한 원문 발췌입니다.
+            예산·행정 규정 등 관련 카테고리에서 찾고, 제목 관련도를 한 번 더 확인한 근거입니다.
           </p>
           <div className="mt-3 space-y-2">
             {result.references.map((ref, idx) => {
@@ -174,9 +187,14 @@ export default function RegulationReviewPanel({ result, busy, onBack, onContinue
                   className={`rounded-lg border p-3 ${tone.card}`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <p className={`text-[12px] font-bold leading-snug ${tone.title}`}>
-                      {idx + 1}. {ref.filename}
-                    </p>
+                    <div className="min-w-0">
+                      {ref.category && (
+                        <p className="text-[10px] font-semibold text-slate-500">{ref.category}</p>
+                      )}
+                      <p className={`text-[12px] font-bold leading-snug ${tone.title}`}>
+                        {idx + 1}. {ref.filename}
+                      </p>
+                    </div>
                     <span
                       className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${tone.chip}`}
                     >

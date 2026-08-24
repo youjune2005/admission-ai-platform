@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -14,10 +15,15 @@ from app.services.rag_service import (
     retrieve_relevant_chunks,
 )
 
+logger = logging.getLogger(__name__)
+
 _NUM = re.compile(r"\d[\d,]*")
+# 수량×단가 산출식. 반드시 '원'이 붙어야 하며, 크기 표기(3m×1m)와 구분합니다.
 _BASIS_RE = re.compile(
     r"(?P<qty>\d[\d,]*)\s*(?P<unit>명|개|부|대|식|장|건|매|본)?\s*[×xX*]\s*(?P<price>\d[\d,]*)\s*원"
 )
+# 숫자와 × 사이에 끼면 산출식이 아닌 길이 단위로 봅니다.
+_LENGTH_UNIT = r"(?:mm|cm|m|㎜|㎝|ｍ|미터|센티|센티미터)"
 _TIME_RE = re.compile(r"(\d{1,2}):(\d{2})\s*[~\-–]\s*(\d{1,2}):(\d{2})")
 
 CONTENT_SYSTEM_PROMPT = (
@@ -26,6 +32,12 @@ CONTENT_SYSTEM_PROMPT = (
     "인터넷·일반 시세·관행·외부 지식은 절대 사용하지 마세요. "
     "같은 불일치는 한 건만 보고하고, 어느 쪽 값을 고칠지 선택지(options)로 나누세요. "
     "예: 수량 4 vs 산출근거 2대 → 옵션1 수량 4→2, 옵션2 근거 2대→4대. "
+    "예산 항목에서 볼 것은 단가·수량·산출 근거 세 가지의 불일치뿐입니다. "
+    "금액·합계·총 예산액·배정 예산·잔액은 시스템이 자동으로 계산하므로 "
+    "검산하거나 서로 비교하지 말고, 그에 대한 지적은 절대 만들지 마세요. "
+    "산출 근거에 'N개 × M원'처럼 수량과 단가가 적힌 식이 있을 때만 대조하세요. "
+    "'견적 기준', '시중가', '협의', '업체 견적'처럼 식이 없는 메모나 "
+    "'3m × 1m' 같은 크기·규격 메모는 수량·단가와 비교하지 마세요. "
     "문서에 없는 항목을 추가하거나 가격이 적절한지 평가하지 마세요. "
     "문제가 없으면 빈 배열을 반환하세요. "
     "반드시 JSON만 출력하세요: "
@@ -38,15 +50,29 @@ CONTENT_SYSTEM_PROMPT = (
 REGULATION_SYSTEM_PROMPT = (
     "당신은 대학 입학처에서 행정문서와 내부 규정을 한 문장씩 대조하는 담당자입니다. "
     "반드시 아래에 제공된 내부 규정·자료 RAG 결과의 원문만 근거로 삼으세요. "
-    "인터넷 검색·일반론·추측·요약으로 대충 넘기지 마세요. "
-    "각 건은 문서에서 문제 되는 구절을 그대로 따오고, 규정에서도 해당 문장을 그대로 따오세요. "
-    "근거 자료에 없는 내용은 위반으로 단정하지 마세요. "
-    "문제가 없으면 findings는 빈 배열입니다. "
+    "인터넷 검색·일반론·추측으로 대충 넘기지 마세요. "
+    "각 건은 문서에서 문제 되는 구절과 규정 원문 문장을 그대로 따오세요. "
+    "\n"
+    "【위반(violation) — 매우 엄격】 "
+    "금액·인원·절차·첨부 의무 등이 규정 문장과 숫자·의무가 명백히 충돌할 때만 쓰세요. "
+    "애매하면 violation으로 올리지 말고 check로 두세요. "
+    "\n"
+    "【검토 필요(check) — 넓게】 "
+    "위반으로 단정하기 어렵더라도, 관련 규정이 있고 문서 기재와 맞춰 볼 여지가 있으면 "
+    "대부분 check로 올리세요. "
+    "예산 한도·견적·첨부·여비·수당·구매·홍보비·다과비·인원·장소·일정 등 "
+    "담당자 확인이 필요할 만한 항목은 check로 잡으세요. "
+    "reason에는 왜 대조가 필요한지 한 문장으로 적으세요. "
+    "관련 규정 청크가 있으면 findings가 거의 비지 않게 하세요. "
+    "\n"
+    "제공된 근거 목록에 없는 문서를 인용하지 마세요. "
+    "모집요강·전형요강은 예산 항목(다과비·홍보물·리플렛 등) 검토 근거로 쓰지 마세요. "
     "반드시 JSON만 출력하세요: "
     '{"findings":[{"status":"violation"|"check","location":"예산 > 다과비",'
     '"document_excerpt":"문서에 적힌 문제 구절 그대로",'
     '"regulation_excerpt":"규정 원문 문장 그대로",'
     '"regulation_title":"규정 파일명","citation_n":1,'
+    '"reason":"검토가 필요한 구체적 이유 한 문장",'
     '"mismatch_note":"이 문서의 「…」 부분이 규정 「…」에 맞지 않음"}]}'
 )
 
@@ -121,6 +147,19 @@ def _rewrite_basis(basis: str, *, qty: int | None = None, price: int | None = No
     return f"{text[: match.start()]}{replacement}{text[match.end() :]}"
 
 
+def _parse_qty_price_basis(basis: str) -> re.Match[str] | None:
+    """수량×단가(원) 산출식만 반환합니다. 크기 표기·견적 메모는 제외합니다."""
+    text = basis or ""
+    match = _BASIS_RE.search(text)
+    if not match:
+        return None
+    # '3m × 50,000원'처럼 숫자와 × 사이에 길이 단위가 끼면 산출식이 아닙니다.
+    between = text[match.start("qty") + len(match.group("qty")) : match.start("price")]
+    if re.search(_LENGTH_UNIT, between, re.I):
+        return None
+    return match
+
+
 def _option(
     *,
     oid: str,
@@ -171,6 +210,7 @@ def _check_budget_lines(
     limit: int | None,
     prefix: str,
     path_prefix: str,
+    verified: list[tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     total = 0
@@ -180,39 +220,26 @@ def _check_budget_lines(
         basis = str(row.get("basis") or "")
         unit_price = _to_int(row.get("unit_price"))
         quantity = _to_int(row.get("quantity"), 1)
-        amount = _to_int(row.get("amount"), unit_price * quantity)
-        computed = unit_price * quantity
-        total += computed
+        total += unit_price * quantity
         loc = f"{prefix} > {name}"
 
+        # 금액은 단가×수량으로 자동 계산되는 값이라 모순 대상이 아닙니다.
+        # 아래 수정안에서 함께 갱신만 해 줍니다.
         has_amount = row.get("amount") is not None
-        if has_amount and amount != computed:
-            issues.append(
-                _issue(
-                    iid=f"{path_prefix}-{idx}-amount",
-                    location=loc,
-                    field=f"{path_prefix}.{idx}.amount",
-                    problem=f"금액 {_won(amount)}이 단가×수량({_won(computed)})과 다릅니다.",
-                    guideline="금액과 단가·수량 중 실제와 맞는 쪽을 선택하세요.",
-                    options=[
-                        _option(
-                            oid="amount-to-computed",
-                            label=f"금액을 {_won(amount)} → {_won(computed)}로 변경",
-                            before=f"금액 {_won(amount)}",
-                            after=f"금액 {_won(computed)}",
-                            patches=[{"path": f"{path_prefix}.{idx}.amount", "value": computed}],
-                        )
-                    ],
-                )
-            )
 
-        match = _BASIS_RE.search(basis)
+        match = _parse_qty_price_basis(basis)
         basis_qty = _to_int(match.group("qty")) if match else 0
         basis_price = _to_int(match.group("price")) if match else 0
         unit = (match.group("unit") if match else "") or ""
         unit_label = unit or "개"
         qty_conflict = bool(match and basis_qty and quantity != basis_qty)
         price_conflict = bool(match and basis_price and unit_price != basis_price)
+
+        # 예산 항목의 산술 대조는 결정적 검사가 전담합니다.
+        # '견적 기준'·크기 메모처럼 산출식이 없어도 LLM이 지어낸 모순을 막기 위해
+        # 항목 자체를 판정 완료로 표시합니다.
+        if verified is not None:
+            verified.append((f"{path_prefix}.{idx}", name))
 
         if qty_conflict and price_conflict:
             to_basis_patches: list[dict[str, Any]] = [
@@ -417,7 +444,11 @@ def _check_programs(programs: list[Any], schedule: str) -> list[dict[str, Any]]:
     return issues
 
 
-def _deterministic_issues(kind: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _deterministic_issues(
+    kind: str,
+    payload: dict[str, Any],
+    verified: list[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     attendees = _to_int(payload.get("attendees")) or None
     schedule = str(payload.get("schedule") or "")
@@ -433,6 +464,7 @@ def _deterministic_issues(kind: str, payload: dict[str, Any]) -> list[dict[str, 
                     limit=limit,
                     prefix="예산",
                     path_prefix="budget_lines",
+                    verified=verified,
                 )
             )
         else:
@@ -445,6 +477,7 @@ def _deterministic_issues(kind: str, payload: dict[str, Any]) -> list[dict[str, 
                     limit=limit,
                     prefix="예산안",
                     path_prefix="items",
+                    verified=verified,
                 )
             )
 
@@ -494,10 +527,71 @@ def _normalize_options(item: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+# 자동 계산 값. 모델이 검산하다 없는 모순을 만들어 내지 않도록 숨깁니다.
+_DERIVED_LINE_FIELDS = ("amount", "total", "sum")
+_DERIVED_TOP_FIELDS = ("allocated_budget", "budget_limit", "total", "total_amount", "remaining")
+
+
+def _strip_derived(payload: dict[str, Any]) -> dict[str, Any]:
+    """LLM에 보낼 사본에서 자동 계산 필드를 걷어냅니다."""
+    clean = {
+        key: value for key, value in payload.items() if key not in _DERIVED_TOP_FIELDS
+    }
+    for key in ("items", "budget_lines"):
+        rows = clean.get(key)
+        if not isinstance(rows, list):
+            continue
+        clean[key] = [
+            {k: v for k, v in _as_dict(row).items() if k not in _DERIVED_LINE_FIELDS}
+            for row in rows
+        ]
+    return clean
+
+
+def _targets_derived_value(field: str, problem: str) -> bool:
+    """자동 계산 값을 두고 시비를 거는 지적인지 판단합니다."""
+    leaf = _normalize_field_path(field).rsplit(".", 1)[-1]
+    if leaf in _DERIVED_LINE_FIELDS or leaf in _DERIVED_TOP_FIELDS:
+        return True
+    if field:
+        return False
+    # field 없이 문장만 온 경우엔 문구로 거릅니다.
+    return any(
+        token in problem
+        for token in ("총액", "합계", "총 예산", "총예산", "배정 예산", "배정예산", "잔액", "잔여")
+    )
+
+
+_BRACKET_INDEX_RE = re.compile(r"\[(\d+)\]")
+
+
+def _normalize_field_path(field: str) -> str:
+    """모델이 items[0].quantity처럼 돌려줘도 items.0.quantity로 맞춥니다."""
+    return _BRACKET_INDEX_RE.sub(r".\1", field.strip()).replace("..", ".")
+
+
+def _reopens_settled_line(
+    field: str,
+    location: str,
+    problem: str,
+    settled: list[tuple[str, str]],
+) -> bool:
+    """산술 판정이 끝난 예산 항목을 LLM이 다시 문제 삼는지 봅니다."""
+    field = _normalize_field_path(field)
+    for path, name in settled:
+        if field == path or field.startswith(f"{path}."):
+            return True
+        # 항목명이 보이면 산술·근거 관련 재지적은 모두 버립니다.
+        if name and (name in location or name in problem):
+            return True
+    return False
+
+
 def _llm_content_issues(
     kind: str,
     payload: dict[str, Any],
     existing: list[dict[str, Any]],
+    settled: list[tuple[str, str]],
 ) -> list[dict[str, Any]]:
     llm = get_llm_service()
     if llm.provider == "mock":
@@ -510,9 +604,14 @@ def _llm_content_issues(
     user = (
         f"문서 종류: {kind}\n"
         f"이미 보고한 위치: {[item.get('location') for item in existing] or '없음'}\n"
+        f"단가·수량·산출 근거 판정을 이미 마친 항목: "
+        f"{[name for _, name in settled] or '없음'}\n"
         "아래 문서 JSON에서 아직 없는 추가 내부 모순만 찾아 JSON으로 답하세요. "
-        "같은 항목의 수량·단가·산출 근거 불일치는 다시 쓰지 마세요.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False, indent=2)[:8000]}"
+        "위에 적힌 항목의 단가·수량·산출 근거는 다시 계산하거나 지적하지 마세요. "
+        "산출 근거에 수량×단가(원) 식이 없으면 비교하지 마세요. "
+        "'견적 기준'·크기 규격 같은 메모는 모순이 아닙니다. "
+        "금액·합계 같은 자동 계산 값은 JSON에 없으니 만들어 내지 마세요.\n\n"
+        f"{json.dumps(_strip_derived(payload), ensure_ascii=False, indent=2)[:8000]}"
     )
     raw = llm.chat([{"role": "user", "content": user}], system=CONTENT_SYSTEM_PROMPT)
     data = _parse_json_payload(raw)
@@ -531,6 +630,10 @@ def _llm_content_issues(
         problem = str(item.get("problem") or "").strip()
         if not problem:
             continue
+        if _targets_derived_value(field, problem):
+            continue
+        if _reopens_settled_line(field, location, problem, settled):
+            continue
         seen_ids.add(iid)
         seen_keys.add(key)
         out.append(
@@ -548,8 +651,10 @@ def _llm_content_issues(
 
 
 def check_content_consistency(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-    issues = _deterministic_issues(kind, payload)
-    issues.extend(_llm_content_issues(kind, payload, issues))
+    # 결정적 검사가 산출 근거까지 대조한 예산 항목. LLM 재검토 대상에서 뺍니다.
+    settled: list[tuple[str, str]] = []
+    issues = _deterministic_issues(kind, payload, settled)
+    issues.extend(_llm_content_issues(kind, payload, issues, settled))
     errors = sum(1 for item in issues if item.get("severity") == "error")
     warns = sum(1 for item in issues if item.get("severity") != "error")
     return {
@@ -562,10 +667,10 @@ def check_content_consistency(kind: str, payload: dict[str, Any]) -> dict[str, A
 
 def _payload_query(kind: str, payload: dict[str, Any]) -> str:
     labels = {
-        "briefing": "입시설명회 운영계획서 예산 집행 수당 여비 구매",
-        "budget": "예산안 집행 수당 여비 구매 견적",
-        "visit": "고교 방문 홍보 출장 여비",
-        "fair": "입학 박람회 부스 홍보 출장",
+        "briefing": "입시설명회 운영계획서 예산 집행지침 구매규정 여비 수당 다과비 홍보물",
+        "budget": "예산안 예산 집행지침 구매규정 여비 수당 견적서 다과비 홍보물 리플렛",
+        "visit": "고교 방문 홍보 출장 여비규정",
+        "fair": "입학 박람회 부스 홍보 출장 여비 구매",
     }
     bits = [labels.get(kind, "입학 행정 규정"), str(payload.get("event_name") or payload.get("title") or "")]
     if payload.get("department"):
@@ -580,12 +685,155 @@ def _payload_query(kind: str, payload: dict[str, Any]) -> str:
     return " ".join(part for part in bits if part).strip()
 
 
+# 문서 종류별 규정 검색 우선 카테고리. 모집요강은 예산 항목(다과·리플렛 등) 근거로 쓰지 않습니다.
+_REGULATION_CATEGORIES: dict[str, list[str]] = {
+    "budget": ["예산·행정 규정", "문서 양식", "재무현황"],
+    "briefing": ["예산·행정 규정", "문서 양식", "재무현황"],
+    "visit": ["예산·행정 규정", "입학처 공지"],
+    "fair": ["예산·행정 규정", "문서 양식", "입학처 공지"],
+}
+_EXCLUDE_FROM_BUDGET_REGS = ("모집요강",)
+
+TITLE_RELEVANCE_SYSTEM = (
+    "당신은 행정문서 규정 검토용 참고자료를 고르는 담당자입니다. "
+    "문서 종류·예산 항목과 제목·카테고리가 실제로 관련된 것만 relevant_ids에 넣으세요. "
+    "예산안·계획서의 다과비·홍보물·리플렛·수당·여비 검토에 모집요강·전형요강은 관련 없습니다. "
+    "예산·행정 규정, 구매/여비/집행 지침, 견적·수당 관련 문서가 우선입니다. "
+    "반드시 JSON만 출력하세요: "
+    '{"relevant_ids":[1,2],"rejected":[{"id":3,"reason":"모집요강으로 예산 항목과 무관"}]}'
+)
+
+
+def _regulation_search_chunks(
+    db: Session, kind: str, payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """종류에 맞는 카테고리에서만 규정 청크를 가져옵니다."""
+    query = _payload_query(kind, payload)
+    preferred = _REGULATION_CATEGORIES.get(kind, ["예산·행정 규정"])
+    chunks = retrieve_relevant_chunks(db, query, top_k=16, categories=preferred)
+    # 우선 카테고리가 비면 모집요강만 빼고 넓힙니다.
+    if len(chunks) < 3 and kind in ("budget", "briefing"):
+        extra = retrieve_relevant_chunks(
+            db,
+            query,
+            top_k=16,
+            exclude_categories=list(_EXCLUDE_FROM_BUDGET_REGS),
+        )
+        seen = {c["document_id"] for c in chunks}
+        for row in extra:
+            if row["document_id"] in seen:
+                continue
+            chunks.append(row)
+            seen.add(row["document_id"])
+        chunks.sort(key=lambda x: float(x.get("score") or 0), reverse=True)
+        chunks = chunks[:16]
+    return chunks
+
+
+def _heuristic_title_relevant(kind: str, filename: str, category: str) -> bool:
+    name = (filename or "").lower()
+    cat = (category or "").strip()
+    if kind in ("budget", "briefing"):
+        if cat in _EXCLUDE_FROM_BUDGET_REGS or cat == "모집요강":
+            return False
+        if any(token in name for token in ("모집요강", "수시모집", "정시모집", "입학전형요강")):
+            return False
+        if cat in ("예산·행정 규정", "문서 양식", "재무현황"):
+            return True
+    return True
+
+
+def _filter_chunks_by_title_relevance(
+    kind: str,
+    payload: dict[str, Any],
+    chunks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """임베딩 후보를 문서 제목·카테고리 관련도로 한 번 더 거릅니다."""
+    if not chunks:
+        return []
+
+    docs: dict[int, dict[str, Any]] = {}
+    for chunk in chunks:
+        doc_id = chunk.get("document_id")
+        if doc_id is None or doc_id in docs:
+            continue
+        docs[int(doc_id)] = {
+            "id": int(doc_id),
+            "filename": chunk.get("filename") or "",
+            "category": chunk.get("category") or "기타",
+        }
+
+    # 휴리스틱으로 명백히 무관한 모집요강류를 먼저 제거합니다.
+    kept_ids = {
+        doc_id
+        for doc_id, meta in docs.items()
+        if _heuristic_title_relevant(kind, str(meta["filename"]), str(meta["category"]))
+    }
+
+    llm = get_llm_service()
+    if llm.provider != "mock" and docs:
+        item_names = [
+            str(_as_dict(row).get("name") or "").strip()
+            for row in _as_list(payload.get("budget_lines") or payload.get("items"))
+        ]
+        item_names = [name for name in item_names if name]
+        catalog = [
+            {
+                "id": meta["id"],
+                "filename": meta["filename"],
+                "category": meta["category"],
+            }
+            for meta in docs.values()
+        ]
+        user = (
+            f"문서 종류: {kind}\n"
+            f"문서 제목: {payload.get('title') or payload.get('event_name') or ''}\n"
+            f"예산 항목: {item_names or '없음'}\n"
+            "아래 후보 중 이 문서 검토에 실제로 쓸 자료의 id만 relevant_ids에 넣으세요.\n\n"
+            f"{json.dumps(catalog, ensure_ascii=False)}"
+        )
+        try:
+            raw = llm.chat([{"role": "user", "content": user}], system=TITLE_RELEVANCE_SYSTEM)
+            data = _parse_json_payload(raw)
+            relevant = data.get("relevant_ids")
+            if isinstance(relevant, list) and relevant:
+                parsed: set[int] = set()
+                for value in relevant:
+                    try:
+                        parsed.add(int(value))
+                    except (TypeError, ValueError):
+                        continue
+                # 모집요강 등 휴리스틱 탈락분은 LLM이 골라도 다시 넣지 않습니다.
+                llm_kept = {
+                    doc_id
+                    for doc_id in parsed
+                    if doc_id in docs
+                    and _heuristic_title_relevant(
+                        kind,
+                        str(docs[doc_id]["filename"]),
+                        str(docs[doc_id]["category"]),
+                    )
+                }
+                if llm_kept:
+                    kept_ids = llm_kept
+        except Exception:  # noqa: BLE001
+            logger.exception("문서 제목 관련도 판별 실패 — 휴리스틱만 적용")
+
+    if not kept_ids:
+        return []
+    return [chunk for chunk in chunks if chunk.get("document_id") in kept_ids]
+
+
 def _numbered_context(chunks: list[dict[str, Any]]) -> str:
     if not chunks:
         return ""
-    parts = [f"[{i}] {c.get('filename')}\n{c.get('content')}" for i, c in enumerate(chunks, 1)]
+    parts = []
+    for i, c in enumerate(chunks, 1):
+        cat = c.get("category") or "기타"
+        parts.append(f"[{i}] ({cat}) {c.get('filename')}\n{c.get('content')}")
     return (
         "다음은 내부 규정·자료 DB에서 RAG로 검색된 근거입니다. "
+        "카테고리·제목이 이 문서와 관련된 자료만 골라 두었습니다. "
         "이 내용에 없는 사실은 위반으로 단정하지 마세요.\n\n"
         + "\n\n---\n\n".join(parts)
     )
@@ -598,19 +846,77 @@ def _clip_quote(text: str, limit: int = 280) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+_STOCK_CHECK_NOTE_RE = re.compile(
+    r"^이 문서의 「[^」]*」 부분은 규정( 「[^」]*」)?과 대조해 검토가 필요함$"
+)
+
+
+def _is_substantive_check_reason(text: str) -> bool:
+    """검토 필요 사유로 쓸 수 있는지. 기준을 낮춰 대부분을 통과시킵니다."""
+    t = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(t) < 6:
+        return False
+    if _STOCK_CHECK_NOTE_RE.fullmatch(t):
+        return False
+    if re.fullmatch(r"(검토|확인)(가|이)?\s*필요(합니다?|함)?\.?", t):
+        return False
+    return True
+
+
+def _looks_clear_violation(item: dict[str, Any]) -> bool:
+    """명백한 규정 충돌인지. 애매하면 False → check로 내립니다."""
+    doc = str(item.get("document_excerpt") or "").strip()
+    reg = str(item.get("regulation_excerpt") or "").strip()
+    reason = str(item.get("reason") or item.get("mismatch_note") or "").strip()
+    if not doc or not reg:
+        return False
+    strong = (
+        "초과",
+        "위반",
+        "금지",
+        "불가",
+        "의무",
+        "첨부",
+        "이상",
+        "이하",
+        "한도",
+        "필수",
+        "해야",
+        "않아",
+        "없다",
+        "없으며",
+        "모순",
+        "충돌",
+    )
+    blob = f"{reason} {doc} {reg}"
+    if not any(tok in blob for tok in strong):
+        return False
+    # 규정·문서에 숫자가 함께 있으면 한도/금액 충돌 가능성이 큼
+    if _NUM.search(doc) and _NUM.search(reg):
+        return True
+    return any(tok in reason for tok in ("위반", "금지", "불가", "초과", "모순", "충돌", "의무"))
+
+
 def _compose_mismatch_note(
     status: str,
     document_excerpt: str,
     regulation_excerpt: str,
     fallback: str = "",
+    *,
+    reason: str = "",
 ) -> str:
     doc = _clip_quote(document_excerpt, 80) or "해당 기재"
     reg = _clip_quote(regulation_excerpt, 90)
+    why = _clip_quote(reason or fallback, 180)
     if status == "violation":
         if reg:
             return f'이 문서의 「{doc}」 부분이 규정 「{reg}」에 맞지 않음'
         return f'이 문서의 「{doc}」 부분이 규정에 맞지 않음'
     if status == "check":
+        if why and _is_substantive_check_reason(why):
+            if reg:
+                return f"검토 필요 이유: {why} (문서 「{doc}」 ↔ 규정 「{reg}」)"
+            return f"검토 필요 이유: {why} (문서 「{doc}」)"
         if reg:
             return f'이 문서의 「{doc}」 부분은 규정 「{reg}」과 대조해 검토가 필요함'
         return f'이 문서의 「{doc}」 부분은 규정과 대조해 검토가 필요함'
@@ -634,10 +940,48 @@ def _normalize_finding(item: dict[str, Any], chunks: list[dict[str, Any]]) -> di
     regulation_excerpt = _clip_quote(str(item.get("regulation_excerpt") or ""), 360)
     if not regulation_excerpt and citation_n and 1 <= citation_n <= len(chunks):
         regulation_excerpt = _clip_quote(str(chunks[citation_n - 1].get("content") or ""), 360)
+
+    reason = str(item.get("reason") or "").strip()
     note = str(item.get("mismatch_note") or item.get("explanation") or "").strip()
-    if "「" not in note:
-        note = _compose_mismatch_note(status, document_excerpt, regulation_excerpt, note)
-    if not document_excerpt and not regulation_excerpt:
+    if not reason and note:
+        reason = note
+
+    # 애매한 위반은 검토 필요로 내림 (위반 기준을 빡세게)
+    if status == "violation" and not _looks_clear_violation(
+        {
+            "document_excerpt": document_excerpt,
+            "regulation_excerpt": regulation_excerpt,
+            "reason": reason or note,
+            "mismatch_note": note,
+        }
+    ):
+        status = "check"
+        if not reason:
+            reason = "규정 문장과 문서 기재를 담당자가 대조해 적합 여부를 확인할 필요가 있음"
+
+    if status == "check" and not reason:
+        if regulation_excerpt or title:
+            reason = (
+                f"관련 규정「{title or '내부 규정'}」과 문서 기재를 대조·확인할 필요가 있음"
+            )
+        else:
+            reason = "관련 규정과 문서 기재를 담당자가 확인할 필요가 있음"
+
+    if status == "check" and not _is_substantive_check_reason(reason):
+        reason = "관련 규정과 문서 기재를 담당자가 대조·확인할 필요가 있음"
+
+    if status == "violation":
+        if "「" not in note:
+            note = _compose_mismatch_note(status, document_excerpt, regulation_excerpt, note)
+    else:
+        note = _compose_mismatch_note(
+            status,
+            document_excerpt,
+            regulation_excerpt,
+            reason=reason,
+        )
+
+    if not document_excerpt and not regulation_excerpt and not reason:
         return None
     return {
         "status": status,
@@ -647,45 +991,64 @@ def _normalize_finding(item: dict[str, Any], chunks: list[dict[str, Any]]) -> di
         "regulation_title": title,
         "citation_n": citation_n,
         "regulation_excerpt": regulation_excerpt,
+        "reason": _clip_quote(reason, 220) if reason else "",
         "mismatch_note": note,
         "explanation": note,
     }
 
 
-def _fallback_regulation_findings(chunks: list[dict[str, Any]], payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """LLM이 없거나 결과가 비었을 때, 관련 규정 원문을 인용해 검토 필요로 표시."""
-    lines = _as_list(payload.get("budget_lines") or payload.get("items"))
-    line_bits = []
-    for raw in lines:
-        rec = _as_dict(raw)
+def _payload_document_excerpt(payload: dict[str, Any]) -> str:
+    bits: list[str] = []
+    for key in ("event_name", "title", "schedule", "location", "target", "department"):
+        val = str(payload.get(key) or "").strip()
+        if val:
+            bits.append(val)
+    for row in _as_list(payload.get("budget_lines") or payload.get("items"))[:4]:
+        rec = _as_dict(row)
         name = str(rec.get("name") or "").strip()
-        basis = str(rec.get("basis") or "").strip()
         if name:
-            line_bits.append((name, f"{name} {basis}".strip()))
+            bits.append(name)
+    for row in _as_list(payload.get("programs"))[:3]:
+        rec = _as_dict(row)
+        content = str(rec.get("content") or "").strip()
+        if content:
+            bits.append(content)
+    return _clip_quote(" / ".join(bits), 180) or "문서 본문"
+
+
+def _fallback_regulation_findings(
+    chunks: list[dict[str, Any]], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """LLM 실패·빈 결과 시에도 관련 규정별로 검토 필요를 남깁니다."""
+    doc_excerpt = _payload_document_excerpt(payload)
     findings: list[dict[str, Any]] = []
-    for idx, chunk in enumerate(chunks[:4], 1):
-        content = str(chunk.get("content") or "").strip()
-        if len(content) < 20:
+    seen: set[str] = set()
+    for idx, chunk in enumerate(chunks[:8], start=1):
+        title = str(chunk.get("filename") or "내부 규정").strip() or "내부 규정"
+        if title in seen:
             continue
-        hit = next((pair for pair in line_bits if pair[0] and pair[0] in content), None)
-        document_excerpt = hit[1] if hit else str(payload.get("event_name") or payload.get("title") or "작성 문서")
+        seen.add(title)
+        reg_excerpt = _clip_quote(str(chunk.get("content") or ""), 280)
+        reason = (
+            f"관련 규정「{title}」과 문서 기재를 담당자가 대조·확인할 필요가 있음"
+        )
         findings.append(
             {
                 "status": "check",
-                "location": hit[0] if hit else "문서 전반",
-                "document_excerpt": document_excerpt,
-                "regulation_excerpt": content,
-                "regulation_title": str(chunk.get("filename") or ""),
+                "location": "규정 대조",
+                "problem": f"검토 필요 이유: {reason}",
+                "document_excerpt": doc_excerpt,
+                "regulation_title": title,
                 "citation_n": idx,
-                "mismatch_note": "",
+                "regulation_excerpt": reg_excerpt,
+                "reason": reason,
+                "mismatch_note": f"검토 필요 이유: {reason} (문서 「{doc_excerpt}」)",
+                "explanation": f"검토 필요 이유: {reason}",
             }
         )
-    out: list[dict[str, Any]] = []
-    for raw in findings:
-        normalized = _normalize_finding(raw, chunks)
-        if normalized:
-            out.append(normalized)
-    return out
+        if len(findings) >= 5:
+            break
+    return findings
 
 
 def _attach_reference_mismatches(
@@ -715,6 +1078,7 @@ def _attach_reference_mismatches(
             {
                 "document_id": ref.get("document_id"),
                 "filename": filename,
+                "category": ref.get("category") or "기타",
                 "relevance": ref.get("relevance"),
                 "score": ref.get("score"),
                 "snippet": ref.get("snippet"),
@@ -732,8 +1096,8 @@ def _attach_reference_mismatches(
 
 
 def review_plan_regulations(db: Session, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-    query = _payload_query(kind, payload)
-    chunks = retrieve_relevant_chunks(db, query, top_k=12)
+    raw_chunks = _regulation_search_chunks(db, kind, payload)
+    chunks = _filter_chunks_by_title_relevance(kind, payload, raw_chunks)
     refs = aggregate_document_references(chunks, limit=6)
     context = _numbered_context(chunks[:8])
 
@@ -743,13 +1107,14 @@ def review_plan_regulations(db: Session, kind: str, payload: dict[str, Any]) -> 
             {
                 "status": "check",
                 "location": "규정 검토",
-                "problem": "내부 규정·자료 DB에서 이 문서와 관련된 근거를 찾지 못했습니다.",
+                "problem": "관련 카테고리(예산·행정 규정 등)에서 이 문서와 맞는 근거를 찾지 못했습니다.",
                 "document_excerpt": "",
                 "regulation_title": "",
                 "citation_n": None,
                 "regulation_excerpt": "",
-                "mismatch_note": "등록된 규정 원문이 없어 이 문서의 적합성 여부를 판단할 수 없음",
-                "explanation": "규정·자료 관리에 문서를 등록한 뒤 다시 검토하세요.",
+                "reason": "예산·행정 관련 규정 자료가 없거나, 제목 관련도 검토에서 제외되어 적합 여부를 판단할 수 없음",
+                "mismatch_note": "검토 필요 이유: 예산·행정 관련 규정 자료가 없거나, 제목 관련도 검토에서 제외되어 적합 여부를 판단할 수 없음",
+                "explanation": "규정·자료 관리의 「예산·행정 규정」 등에 관련 문서를 등록한 뒤 다시 검토하세요.",
             }
         )
     else:
@@ -757,8 +1122,12 @@ def review_plan_regulations(db: Session, kind: str, payload: dict[str, Any]) -> 
         system = f"{REGULATION_SYSTEM_PROMPT}\n\n{context}"
         user = (
             f"문서 종류: {kind}\n"
-            "행정문서 JSON의 각 항목(예산 단가·수량·산출근거·일정 등)을 규정 원문과 한 문장씩 대조하세요. "
-            "요약하지 말고, 문서 구절과 규정 구절을 그대로 인용하세요.\n\n"
+            "행정문서 JSON과 규정 원문을 한 문장씩 대조하세요. "
+            "violation은 규정과 문서가 명백히 충돌할 때만. "
+            "애매하거나 확인이 필요하면 대부분 check로 올리세요. "
+            "관련 규정 청크가 있으면 findings를 거의 비우지 마세요. "
+            "모집요강·전형요강 인용은 예산 항목(다과비·홍보물 등) 검토에 쓰지 마세요. "
+            "문서 구절과 규정 구절을 그대로 인용하세요.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)[:7000]}"
         )
         rows: list[Any] = []
@@ -772,6 +1141,19 @@ def review_plan_regulations(db: Session, kind: str, payload: dict[str, Any]) -> 
             normalized = _normalize_finding(_as_dict(row), chunks)
             if normalized:
                 findings.append(normalized)
+        # LLM이 거의 안 올리거나 실패하면 관련 규정별 검토 필요로 채움
+        if len(findings) < 2:
+            existing_titles = {
+                str(f.get("regulation_title") or "").strip() for f in findings
+            }
+            for extra in _fallback_regulation_findings(chunks, payload):
+                title = str(extra.get("regulation_title") or "").strip()
+                if title and title in existing_titles:
+                    continue
+                findings.append(extra)
+                existing_titles.add(title)
+                if len(findings) >= 5:
+                    break
         if not findings and (llm.provider == "mock" or not parsed_ok):
             findings.extend(_fallback_regulation_findings(chunks, payload))
 
